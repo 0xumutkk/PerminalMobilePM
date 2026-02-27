@@ -1,0 +1,1215 @@
+import React, { useEffect, useState, useCallback } from "react";
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Pressable, Platform } from "react-native";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { StatusBar } from "expo-status-bar";
+import { ArrowLeft, Info, TrendingUp, Users, Calendar, Plus, Minus, X, ChevronDown, ChevronUp, Database, ArrowUpCircle, BarChart3, ReceiptCent, Star, Share2 } from "lucide-react-native";
+import { GlassView, isLiquidGlassAvailable } from "expo-glass-effect";
+import { LinearGradient } from "expo-linear-gradient";
+import type { Market, ChartPoint } from "../../../lib/mock-data";
+import { useEmbeddedSolanaWallet, isConnected } from "@privy-io/expo";
+import { fetchMarketForApp } from "../../../lib/jupiter";
+import { MarketChartNative } from "../../../components/MarketChartNative";
+import { TradePanel } from "../../../components/market/TradePanel";
+import { TradeSide, TradeMode } from "../../../hooks/useTrade";
+
+interface Trade {
+    side: "buy" | "sell";
+    price: number;
+    size: number;
+    timestamp: number;
+    txHash: string;
+}
+import { Image } from "expo-image";
+import { Modal } from "react-native";
+import { getTokenBalance } from "../../../lib/solana";
+import { GlassHeader } from "../../../components/ui/GlassHeader";
+import { detectCryptoPriceCoinFromMarket, fetchCryptoPriceHistory, fetchCryptoSpotPrice } from "../../../lib/crypto";
+
+type TabKey = "position" | "about" | "holders" | "activity";
+
+const SUPPORTS_GLASS = Platform.OS === "ios" && isLiquidGlassAvailable();
+
+function normalizeOutcomeLabel(label?: string): string {
+    return String(label ?? "").replace(/\s+/g, " ").trim();
+}
+
+function getMarketIddiaText(market: Pick<Market, "yesLabel" | "noLabel">): string | null {
+    const yes = normalizeOutcomeLabel(market.yesLabel);
+    const no = normalizeOutcomeLabel(market.noLabel);
+    const candidates = [yes, no].filter((label) => /^(price to beat|iddia|idda)\s*:/i.test(label));
+    if (candidates.length === 0) return null;
+    const concrete = candidates.find((value) => !/tbd/i.test(value));
+    return concrete ?? candidates[0];
+}
+
+
+function MarketDetailScreen() {
+    const { id, side: sideParam, tradeMode: tradeModeParam } = useLocalSearchParams<{
+        id: string;
+        side?: string;
+        tradeMode?: string;
+    }>();
+    const router = useRouter();
+    const [market, setMarket] = useState<Market | null>(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+    const [activeTab, setActiveTab] = useState<TabKey>("position");
+    const [activeRange, setActiveRange] = useState<string>("ALL");
+    const [showTradePanel, setShowTradePanel] = useState(false);
+    const [initialSide, setInitialSide] = useState<TradeSide>("YES");
+    const [initialTradeMode, setInitialTradeMode] = useState<TradeMode>("BUY");
+    const [showMoreRules, setShowMoreRules] = useState(false);
+    const [yesBalance, setYesBalance] = useState<number>(0);
+    const [noBalance, setNoBalance] = useState<number>(0);
+    const [trades, setTrades] = useState<Trade[]>([]);
+    const [tradesLoading, setTradesLoading] = useState(false);
+    const [chartData, setChartData] = useState<ChartPoint[]>([]);
+    const [chartValueType, setChartValueType] = useState<"probability" | "price">("probability");
+    const [chartAssetLabel, setChartAssetLabel] = useState<string | undefined>(undefined);
+
+    const solanaWallet = useEmbeddedSolanaWallet();
+    const isWalletConnected = isConnected(solanaWallet);
+    const walletAddress = isWalletConnected && solanaWallet.wallets?.[0] ? solanaWallet.wallets[0].address : null;
+
+    useEffect(() => {
+        if (sideParam === "YES" || sideParam === "NO") {
+            setInitialSide(sideParam);
+            return;
+        }
+        setInitialSide("YES");
+    }, [sideParam]);
+
+    useEffect(() => {
+        if (tradeModeParam === "BUY" || tradeModeParam === "SELL") {
+            setInitialTradeMode(tradeModeParam);
+            setShowTradePanel(true);
+            return;
+        }
+        setInitialTradeMode("BUY");
+    }, [tradeModeParam]);
+
+    useEffect(() => {
+        if (!id) {
+            setLoading(false);
+            setError("Invalid market");
+            return;
+        }
+        let cancelled = false;
+        setLoading(true);
+        setError(null);
+        fetchMarketForApp(id)
+            .then((m) => {
+                if (cancelled) return;
+                if (!m) {
+                    setError("Market not found");
+                    return;
+                }
+
+                // Fetch balances if wallet is connected
+                if (walletAddress) {
+                    if (m.yesMint) {
+                        getTokenBalance(walletAddress, m.yesMint).then(b => !cancelled && setYesBalance(b));
+                    }
+                    if (m.noMint) {
+                        getTokenBalance(walletAddress, m.noMint).then(b => !cancelled && setNoBalance(b));
+                    }
+                }
+
+                const finalYesPrice = m.yesPrice;
+                const probabilityHistory = m.priceHistory ?? [];
+
+                setChartData(probabilityHistory);
+                setChartValueType("probability");
+                setChartAssetLabel(undefined);
+                setMarket({
+                    ...m,
+                    yesPrice: finalYesPrice,
+                    priceHistory: probabilityHistory,
+                });
+            })
+            .catch((e) => {
+                if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load");
+            })
+            .finally(() => {
+                if (!cancelled) setLoading(false);
+            });
+        return () => { cancelled = true; };
+    }, [id, walletAddress]);
+
+    useEffect(() => {
+        if (!market) return;
+
+        const probabilityFallback = market.priceHistory ?? [];
+        const coin = detectCryptoPriceCoinFromMarket(market);
+        if (!coin) {
+            setChartValueType("probability");
+            setChartAssetLabel(undefined);
+            setChartData(probabilityFallback);
+            return;
+        }
+
+        let cancelled = false;
+        const rangeHours = 6;
+
+        const loadCoinHistory = async () => {
+            const history = await fetchCryptoPriceHistory(coin.id, { rangeHours });
+            if (cancelled) return;
+            if (history.length > 0) {
+                setChartValueType("price");
+                setChartAssetLabel(`${coin.symbol}/USD`);
+                setChartData(history);
+                return;
+            }
+            setChartValueType("probability");
+            setChartAssetLabel(undefined);
+            setChartData(probabilityFallback);
+        };
+
+        const appendSpotPrice = async () => {
+            const spotPrice = await fetchCryptoSpotPrice(coin.id);
+            if (cancelled || spotPrice == null) return;
+
+            setChartValueType("price");
+            setChartAssetLabel(`${coin.symbol}/USD`);
+            setChartData((previous) => {
+                const now = Date.now();
+                const point: ChartPoint = { timestamp: now, value: spotPrice };
+                const previousLooksLikeProbability =
+                    previous.length > 0 &&
+                    previous.every((item) => item.value >= 0 && item.value <= 1.2);
+                const next = previousLooksLikeProbability ? [] : [...previous];
+
+                if (next.length > 0 && now - next[next.length - 1].timestamp < 20_000) {
+                    next[next.length - 1] = point;
+                } else {
+                    next.push(point);
+                }
+
+                const cutoff = now - rangeHours * 3600 * 1000;
+                return next
+                    .filter((item) => item.timestamp >= cutoff)
+                    .slice(-360);
+            });
+        };
+
+        loadCoinHistory();
+        const spotTimer = setInterval(() => {
+            appendSpotPrice();
+        }, 15_000);
+        const historyRefreshTimer = setInterval(() => {
+            loadCoinHistory();
+        }, 120_000);
+
+        return () => {
+            cancelled = true;
+            clearInterval(spotTimer);
+            clearInterval(historyRefreshTimer);
+        };
+    }, [
+        market?.id,
+        market?.title,
+        market?.description,
+        market?.category,
+        market?.ticker,
+        market?.eventTicker,
+        market?.seriesTicker,
+        market?.strikePeriod,
+        market?.priceHistory,
+    ]);
+
+    // Fetch trades when Activity tab is selected
+    useEffect(() => {
+        if (activeTab !== "activity") return;
+
+        let cancelled = false;
+        const loadTrades = async () => {
+            setTradesLoading(true);
+            try {
+                const recentTrades: Trade[] = []; // Trading history from Jupiter not yet supported in this view
+
+                if (!cancelled) {
+                    setTrades(recentTrades);
+                }
+            } catch (err) {
+                if (!cancelled) {
+                    console.warn("[MarketDetail] Failed to fetch trades:", err);
+                }
+            } finally {
+                if (!cancelled) {
+                    setTradesLoading(false);
+                }
+            }
+        };
+
+        loadTrades();
+        return () => {
+            cancelled = true;
+        };
+    }, [activeTab, id, market?.id, market?.ticker, market?.yesMint, market?.noMint]);
+
+    if (loading) {
+        return (
+            <View style={[styles.container, styles.centered]}>
+                <StatusBar style="light" />
+                <ActivityIndicator size="large" color="#a855f7" />
+                <Text style={styles.loadingText}>Loading market...</Text>
+            </View>
+        );
+    }
+
+    if (error || !market) {
+        return (
+            <View style={styles.errorContainer}>
+                <Text style={styles.errorText}>{error ?? "Market not found"}</Text>
+                <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+                    <Text style={styles.backButtonText}>Go Back</Text>
+                </TouchableOpacity>
+            </View>
+        );
+    }
+
+    const yesPercent = Math.round(market.yesPrice * 100);
+    const noPercent = 100 - yesPercent;
+    const probabilityHistory = market.priceHistory ?? [];
+    const chartSeries = chartData.length > 0 ? chartData : probabilityHistory;
+    const isUp = chartSeries.length >= 2
+        ? chartSeries[chartSeries.length - 1].value >= chartSeries[0].value
+        : true;
+    const chartColor = isUp ? "#10b981" : "#ef4444";
+    const marketIddiaText = getMarketIddiaText(market);
+    const hasOpenPosition = yesBalance > 0.000001 || noBalance > 0.000001;
+    const preferredBuySide: TradeSide = initialSide;
+    const preferredSellSide: TradeSide =
+        yesBalance > 0 || noBalance > 0
+            ? (yesBalance >= noBalance ? "YES" : "NO")
+            : initialSide;
+    const primaryFooterLabel = hasOpenPosition ? "BUY" : "BUY YES";
+    const secondaryFooterLabel = hasOpenPosition ? "SELL" : "BUY NO";
+    const secondaryFooterMode: TradeMode = hasOpenPosition ? "SELL" : "BUY";
+    const primaryFooterSide: TradeSide = hasOpenPosition ? preferredBuySide : "YES";
+    const secondaryFooterSide: TradeSide = hasOpenPosition ? preferredSellSide : "NO";
+
+    const handleOpenTrade = (side: TradeSide, mode: TradeMode = "BUY") => {
+        setInitialSide(side);
+        setInitialTradeMode(mode);
+        setShowTradePanel(true);
+    };
+
+    const handleTradeSuccess = (signature: string) => {
+        Alert.alert("Success", `Trade successful! Signature: ${signature.slice(0, 8)}...`);
+        setShowTradePanel(false);
+    };
+
+    return (
+        <SafeAreaView style={styles.container} edges={["top"]}>
+            <StatusBar style="dark" />
+            <GlassHeader
+                title={market.title}
+                onBack={() => {
+                    console.log("[MarketDetail] Back pressed");
+                    router.back();
+                }}
+                rightIcon1={<Star color="#000" size={20} strokeWidth={2} />}
+                onRightAction1={() => {
+                    Alert.alert("Favorite", "Market added to favorites!");
+                }}
+                rightIcon2={<Share2 color="#000" size={20} strokeWidth={2} />}
+                onRightAction2={() => {
+                    Alert.alert("Share", "Sharing feature coming soon!");
+                }}
+            />
+
+            <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+                <View style={styles.titleSection}>
+                    <View style={styles.marketImageContainer}>
+                        {market.imageUrl && (
+                            <Image source={market.imageUrl} style={styles.marketImage} contentFit="cover" />
+                        )}
+                    </View>
+                    <View style={styles.titleTextContainer}>
+                        <Text style={styles.marketTitle}>{market.title}</Text>
+                        {!!marketIddiaText && (
+                            <Text style={styles.marketIddiaText} numberOfLines={2}>
+                                {marketIddiaText}
+                            </Text>
+                        )}
+                    </View>
+                </View>
+
+                {/* Chart Section - always show; MarketChartNative displays "No chart data" when empty */}
+                <MarketChartNative
+                    data={chartSeries}
+                    color={chartColor}
+                    activeRange={activeRange}
+                    onRangeChange={setActiveRange}
+                    valueType={chartValueType}
+                    assetLabel={chartAssetLabel}
+                />
+
+                {/* Position / About / Holders / Activity block (chart altı, ~350px) */}
+                <View style={styles.positionBlock}>
+                    <View style={styles.tabRow}>
+                        {(["position", "about", "holders", "activity"] as const).map((tab) => (
+                            <TouchableOpacity
+                                key={tab}
+                                onPress={() => setActiveTab(tab)}
+                                style={[styles.tab, activeTab === tab && styles.tabActive]}
+                            >
+                                <Text style={[styles.tabLabel, activeTab === tab && styles.tabLabelActive]}>
+                                    {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                                </Text>
+                            </TouchableOpacity>
+                        ))}
+                    </View>
+
+                    {activeTab === "position" && (
+                        <View style={styles.positionTabContent}>
+                            {/* Position Summary Card */}
+                            <View style={styles.positionSummaryCard}>
+                                <View style={styles.positionCardHeader}>
+                                    <View style={styles.positionCardTitleRow}>
+                                        <View style={styles.marketIconBadge}>
+                                            <ReceiptCent color="#34c759" size={14} />
+                                        </View>
+                                        <Text style={styles.positionCardTitle} numberOfLines={1}>
+                                            {market.title}
+                                        </Text>
+                                    </View>
+                                    <TouchableOpacity activeOpacity={0.7}>
+                                        <Share2 color="#6b7280" size={18} />
+                                    </TouchableOpacity>
+                                </View>
+
+                                <View style={styles.positionInnerCard}>
+                                    <View style={styles.positionGridRow}>
+                                        <View style={styles.positionGridItem}>
+                                            <Text style={styles.positionGridLabel}>Balance</Text>
+                                            <View style={styles.positionValueRow}>
+                                                <Text style={styles.positionMainValue}>
+                                                    {yesBalance > 0 ? (yesBalance >= 1000 ? (yesBalance / 1000).toFixed(1) + "k" : yesBalance.toFixed(1)) :
+                                                        noBalance > 0 ? (noBalance >= 1000 ? (noBalance / 1000).toFixed(1) + "k" : noBalance.toFixed(1)) : "0"}
+                                                </Text>
+                                                {(yesBalance > 0 || noBalance > 0) && (
+                                                    <View style={[styles.sidePill, { backgroundColor: yesBalance > 0 ? "#10b981" : "#ef4444" }]}>
+                                                        <Text style={styles.sidePillText}>{yesBalance > 0 ? "Yes" : "No"}</Text>
+                                                    </View>
+                                                )}
+                                                <Text style={styles.positionUnitValue}>Shares</Text>
+                                            </View>
+                                        </View>
+                                        <View style={styles.positionGridItem}>
+                                            <Text style={styles.positionGridLabel}>Value</Text>
+                                            <Text style={styles.positionMainValue}>
+                                                ${(yesBalance > 0 ? (yesBalance * market.yesPrice) : noBalance > 0 ? (noBalance * (1 - market.yesPrice)) : 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                            </Text>
+                                        </View>
+                                    </View>
+
+                                    <View style={styles.positionGridRow}>
+                                        <View style={styles.positionGridItem}>
+                                            <Text style={styles.positionGridLabel}>Avg. Cost</Text>
+                                            <Text style={styles.positionMainValue}>--</Text>
+                                        </View>
+                                        <View style={styles.positionGridItem}>
+                                            <Text style={styles.positionGridLabel}>Total Invested</Text>
+                                            <Text style={styles.positionMainValue}>--</Text>
+                                        </View>
+                                    </View>
+
+                                    <View style={styles.positionGridRow}>
+                                        <View style={styles.positionGridItem}>
+                                            <Text style={styles.positionGridLabel}>Today’s Return</Text>
+                                            <View>
+                                                <Text style={[styles.positionMainValue, { color: "#34c759" }]}>+$0.00</Text>
+                                                <View style={styles.returnSubRow}>
+                                                    <ChevronUp color="#34c759" size={12} />
+                                                    <Text style={styles.returnPercentText}>+0.0%</Text>
+                                                </View>
+                                            </View>
+                                        </View>
+                                        <View style={styles.positionGridItem}>
+                                            <Text style={styles.positionGridLabel}>Total Return</Text>
+                                            <View>
+                                                <Text style={[styles.positionMainValue, { color: "#34c759" }]}>+$0.00</Text>
+                                                <View style={styles.returnSubRow}>
+                                                    <ChevronUp color="#34c759" size={12} />
+                                                    <Text style={styles.returnPercentText}>+0.0%</Text>
+                                                </View>
+                                            </View>
+                                        </View>
+                                    </View>
+                                </View>
+                            </View>
+
+                            {/* Activity Section */}
+                            <View style={styles.activitySection}>
+                                <Text style={styles.yourActivityTitle}>Your Activity</Text>
+                                <View style={styles.activityList}>
+                                    <Text style={styles.placeholderText}>No recent trades on-chain</Text>
+                                </View>
+                            </View>
+                        </View>
+                    )}
+
+                    {activeTab === "about" && (
+                        <>
+                            {/* Rules Section */}
+                            <View style={styles.rulesSection}>
+                                <View style={styles.rulesTitleRow}>
+                                    <Info color="#a855f7" size={18} />
+                                    <Text style={styles.rulesTitle}>Rules</Text>
+                                </View>
+                                <Text
+                                    style={styles.rulesText}
+                                    numberOfLines={showMoreRules ? undefined : 4}
+                                >
+                                    {market.description}
+                                </Text>
+                                <TouchableOpacity
+                                    style={styles.showMoreRow}
+                                    onPress={() => setShowMoreRules(!showMoreRules)}
+                                    activeOpacity={0.7}
+                                >
+                                    <Text style={styles.showMoreText}>
+                                        {showMoreRules ? "Show less" : "Show more"}
+                                    </Text>
+                                    {showMoreRules
+                                        ? <ChevronUp color="#6b7280" size={16} />
+                                        : <ChevronDown color="#6b7280" size={16} />
+                                    }
+                                </TouchableOpacity>
+                            </View>
+
+                            {/* Stats 2×2 Grid */}
+                            <View style={styles.aboutStatsGrid}>
+                                <View style={styles.aboutStatCard}>
+                                    <View style={styles.aboutStatHeader}>
+                                        <Database color="#9ca3af" size={16} />
+                                        <Text style={styles.aboutStatLabel}>Volume</Text>
+                                    </View>
+                                    <View style={styles.aboutStatValueBox}>
+                                        <Text style={styles.aboutStatValue}>
+                                            ${market.volume >= 1_000_000 ? (market.volume / 1_000_000).toFixed(2) + "M" : market.volume >= 1_000 ? (market.volume / 1_000).toFixed(1) + "K" : market.volume.toFixed(0)}
+                                        </Text>
+                                    </View>
+                                </View>
+                                <View style={styles.aboutStatCard}>
+                                    <View style={styles.aboutStatHeader}>
+                                        <ArrowUpCircle color="#9ca3af" size={16} />
+                                        <Text style={styles.aboutStatLabel}>24H Change</Text>
+                                    </View>
+                                    <View style={styles.aboutStatValueBox}>
+                                        <Text style={[styles.aboutStatValue, { color: "#34c759" }]}>
+                                            {chartSeries.length >= 2 && chartSeries[0].value !== 0
+                                                ? ((chartSeries[chartSeries.length - 1].value - chartSeries[0].value) / chartSeries[0].value * 100).toFixed(1) + "%"
+                                                : "0.0%"
+                                            }
+                                        </Text>
+                                    </View>
+                                </View>
+                                <View style={styles.aboutStatCard}>
+                                    <View style={styles.aboutStatHeader}>
+                                        <Users color="#9ca3af" size={16} />
+                                        <Text style={styles.aboutStatLabel}>Predictors</Text>
+                                    </View>
+                                    <View style={styles.aboutStatValueBox}>
+                                        <Text style={styles.aboutStatValue}>--</Text>
+                                    </View>
+                                </View>
+                                <View style={styles.aboutStatCard}>
+                                    <View style={styles.aboutStatHeader}>
+                                        <BarChart3 color="#9ca3af" size={16} />
+                                        <Text style={styles.aboutStatLabel}>OI</Text>
+                                    </View>
+                                    <View style={styles.aboutStatValueBox}>
+                                        <Text style={styles.aboutStatValue}>
+                                            ${(market.openInterest ?? 0) >= 1_000_000 ? ((market.openInterest ?? 0) / 1_000_000).toFixed(2) + "M" : (market.openInterest ?? 0) >= 1_000 ? ((market.openInterest ?? 0) / 1_000).toFixed(1) + "K" : (market.openInterest ?? 0).toFixed(0)}
+                                        </Text>
+                                    </View>
+                                </View>
+                            </View>
+                        </>
+                    )}
+
+                    {activeTab === "holders" && (
+                        <View style={styles.tabContent}>
+                            <Text style={styles.placeholderText}>Holders list coming soon</Text>
+                        </View>
+                    )}
+
+                    {activeTab === "activity" && (
+                        <View style={styles.tabContent}>
+                            {tradesLoading ? (
+                                <ActivityIndicator size="small" color="#a855f7" style={{ marginTop: 12 }} />
+                            ) : trades.length === 0 ? (
+                                <Text style={styles.placeholderText}>No recent trades on-chain</Text>
+                            ) : (
+                                <View style={styles.activityListContainer}>
+                                    {trades.map((trade, idx) => (
+                                        <View key={`${trade.txHash}-${idx}`} style={styles.tradeItem}>
+                                            <View style={styles.tradeInfoMain}>
+                                                <View style={[styles.tradeSideBadge, { backgroundColor: trade.side === "buy" ? "rgba(16, 185, 129, 0.1)" : "rgba(239, 68, 68, 0.1)" }]}>
+                                                    <Text style={[styles.tradeSideText, { color: trade.side === "buy" ? "#10b981" : "#ef4444" }]}>
+                                                        {trade.side.toUpperCase()}
+                                                    </Text>
+                                                </View>
+                                                <Text style={styles.tradePriceText}>${trade.price.toFixed(2)}</Text>
+                                            </View>
+                                            <View style={styles.tradeInfoSide}>
+                                                <Text style={styles.tradeSizeText}>{trade.size.toLocaleString()} shares</Text>
+                                                <Text style={styles.tradeTimeText}>
+                                                    {new Date(trade.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                                </Text>
+                                            </View>
+                                        </View>
+                                    ))}
+                                </View>
+                            )}
+                        </View>
+                    )}
+                </View>
+
+                {/* Stats Grid */}
+                <View style={styles.statsGrid}>
+                    <View style={styles.statCard}>
+                        <TrendingUp color="#666" size={16} />
+                        <Text style={styles.statLabel}>Volume</Text>
+                        <Text style={styles.statValue}>${(market.volume / 1000).toFixed(0)}K</Text>
+                    </View>
+                    <View style={styles.statCard}>
+                        <Users color="#666" size={16} />
+                        <Text style={styles.statLabel}>Chance</Text>
+                        <Text style={[styles.statValue, { color: chartColor }]}>{yesPercent}%</Text>
+                    </View>
+                    <View style={styles.statCard}>
+                        <Calendar color="#666" size={16} />
+                        <Text style={styles.statLabel}>Resolves</Text>
+                        <Text style={styles.statValue}>
+                            {new Date(market.resolveDate).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                        </Text>
+                    </View>
+                </View>
+
+                <View style={{ height: 100 }} />
+            </ScrollView>
+
+            {/* Trade Modal */}
+            <Modal
+                visible={showTradePanel}
+                animationType="slide"
+                transparent={true}
+                onRequestClose={() => setShowTradePanel(false)}
+            >
+                <Pressable style={styles.modalOverlay} onPress={() => setShowTradePanel(false)}>
+                    <Pressable style={styles.modalContent} onPress={(e) => e.stopPropagation()}>
+                        <TradePanel
+                            market={market}
+                            onSuccess={handleTradeSuccess}
+                            initialSide={initialSide}
+                            initialTradeMode={initialTradeMode}
+                        />
+                    </Pressable>
+                </Pressable>
+            </Modal>
+
+            {/* Sticky Footer Actions */}
+            <View style={styles.footer}>
+                <Pressable
+                    style={({ pressed }) => [
+                        styles.tradeButton,
+                        styles.buyYesButton,
+                        pressed && styles.pressed
+                    ]}
+                    onPress={() => handleOpenTrade(primaryFooterSide, "BUY")}
+                >
+                    {SUPPORTS_GLASS ? (
+                        <GlassView
+                            style={StyleSheet.absoluteFill}
+                            glassEffectStyle="clear"
+                            /* @ts-ignore */
+                            refraction={60}
+                            depth={30}
+                            frost={6}
+                        />
+                    ) : (
+                        <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(255, 255, 255, 0.8)" }]} />
+                    )}
+                    <LinearGradient
+                        colors={["rgba(255, 255, 255, 0.4)", "rgba(195, 195, 195, 0.4)", "rgba(255, 255, 255, 0.4)"]}
+                        start={{ x: 1, y: 0 }}
+                        end={{ x: 0, y: 1 }}
+                        style={StyleSheet.absoluteFill}
+                    />
+                    <Text style={styles.tradeButtonText}>{primaryFooterLabel}</Text>
+                </Pressable>
+
+                <Pressable
+                    style={({ pressed }) => [
+                        styles.tradeButton,
+                        styles.buyNoButton,
+                        pressed && styles.pressed
+                    ]}
+                    onPress={() => handleOpenTrade(secondaryFooterSide, secondaryFooterMode)}
+                >
+                    {SUPPORTS_GLASS ? (
+                        <GlassView
+                            style={StyleSheet.absoluteFill}
+                            glassEffectStyle="clear"
+                            /* @ts-ignore */
+                            refraction={60}
+                            depth={30}
+                            frost={6}
+                        />
+                    ) : (
+                        <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(255, 255, 255, 0.8)" }]} />
+                    )}
+                    <LinearGradient
+                        colors={["rgba(255, 255, 255, 0.4)", "rgba(195, 195, 195, 0.4)", "rgba(255, 255, 255, 0.4)"]}
+                        start={{ x: 1, y: 0 }}
+                        end={{ x: 0, y: 1 }}
+                        style={StyleSheet.absoluteFill}
+                    />
+                    <Text style={styles.tradeButtonText}>{secondaryFooterLabel}</Text>
+                </Pressable>
+            </View>
+        </SafeAreaView>
+    );
+}
+
+const styles = StyleSheet.create({
+    container: {
+        flex: 1,
+        backgroundColor: "#ffffff",
+    },
+    centered: {
+        justifyContent: "center",
+        alignItems: "center",
+    },
+    loadingText: {
+        color: "#6b7280",
+        marginTop: 12,
+        fontSize: 16,
+    },
+    scrollContent: {
+        paddingBottom: 110,
+    },
+    header: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        paddingHorizontal: 16,
+        paddingBottom: 12,
+        borderBottomWidth: 1,
+        borderBottomColor: "rgba(0,0,0,0.05)",
+    },
+    headerTitle: {
+        color: "#000",
+        fontSize: 16,
+        fontWeight: "bold",
+        flex: 1,
+        textAlign: "center",
+        marginHorizontal: 16,
+    },
+    iconButton: {
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        backgroundColor: "#fff",
+        alignItems: "center",
+        justifyContent: "center",
+        borderWidth: 1,
+        borderColor: "rgba(0,0,0,0.05)",
+    },
+    titleSection: {
+        flexDirection: "row",
+        alignItems: "center",
+        paddingHorizontal: 16,
+        paddingTop: 16,
+        paddingBottom: 8,
+        gap: 12,
+    },
+    marketImageContainer: {
+        width: 40,
+        height: 40,
+        borderRadius: 8,
+        overflow: "hidden",
+        backgroundColor: "#fff",
+        borderWidth: 1,
+        borderColor: "rgba(0,0,0,0.15)",
+    },
+    marketImage: {
+        width: "100%",
+        height: "100%",
+    },
+    titleTextContainer: {
+        flex: 1,
+        justifyContent: "center",
+    },
+    marketTitle: {
+        color: "#171717",
+        fontSize: 20,
+        fontWeight: "600",
+        lineHeight: 24,
+    },
+    marketIddiaText: {
+        marginTop: 4,
+        color: "#b4975a",
+        fontSize: 14,
+        lineHeight: 18,
+        fontWeight: "600",
+    },
+    categoryBadge: {
+        display: "none",
+    },
+    categoryText: {
+        color: "#a855f7",
+        fontSize: 12,
+        fontWeight: "bold",
+        textTransform: "uppercase",
+    },
+    positionBlock: {
+        width: "100%",
+        padding: 8,
+    },
+    tabRow: {
+        flexDirection: "row",
+        backgroundColor: "rgba(0,0,0,0.05)",
+        borderRadius: 14,
+        padding: 4,
+        marginHorizontal: 16,
+        marginBottom: 16,
+    },
+    tab: {
+        flex: 1,
+        paddingVertical: 8,
+        alignItems: "center",
+        borderRadius: 10,
+    },
+    tabActive: {
+        backgroundColor: "#ffffff",
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 4,
+        elevation: 2,
+    },
+    tabLabel: {
+        fontSize: 13,
+        fontWeight: "600",
+        color: "rgba(0,0,0,0.4)",
+    },
+    tabLabelActive: {
+        color: "#000",
+    },
+    positionColumns: {
+        flexDirection: "row",
+        gap: 24,
+    },
+    positionCol: {
+        flex: 1,
+        gap: 12,
+    },
+    positionRow: {
+        gap: 4,
+    },
+    positionLabel: {
+        color: "rgba(0,0,0,0.5)",
+        fontSize: 12,
+        fontWeight: "700",
+    },
+    positionValue: {
+        color: "#000",
+        fontSize: 16,
+        fontWeight: "600",
+    },
+    balanceValueRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 4,
+    },
+    noSharesPill: {
+        backgroundColor: "#ff383c",
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        borderRadius: 16,
+    },
+    noSharesText: {
+        color: "#fff",
+        fontSize: 12,
+        fontWeight: "700",
+    },
+    positiveText: {
+        color: "#34c759",
+    },
+    returnRow: {
+        gap: 4,
+    },
+    returnPctRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 4,
+    },
+    tabContent: {
+        paddingVertical: 8,
+    },
+    placeholderText: {
+        color: "#6b7280",
+        fontSize: 14,
+    },
+    positionTabContent: {
+        backgroundColor: "#eee",
+        borderRadius: 16,
+        padding: 4,
+        gap: 6,
+    },
+    positionSummaryCard: {
+        padding: 0,
+    },
+    positionCardHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        paddingHorizontal: 8,
+        paddingTop: 6,
+        marginBottom: 4,
+    },
+    positionCardTitleRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 4,
+        flex: 1,
+        marginRight: 12,
+    },
+    marketIconBadge: {
+        width: 20,
+        height: 20,
+        backgroundColor: "rgba(52, 199, 89, 0.1)",
+        borderRadius: 4,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    positionCardTitle: {
+        color: "#000",
+        fontSize: 16,
+        fontWeight: "600",
+    },
+    positionInnerCard: {
+        backgroundColor: "#fff",
+        borderRadius: 12,
+        padding: 8,
+        gap: 16,
+        borderWidth: 0,
+    },
+    positionGridRow: {
+        flexDirection: "row",
+        justifyContent: "space-between",
+        gap: 12,
+    },
+    positionGridItem: {
+        flex: 1,
+        gap: 4,
+    },
+    positionGridLabel: {
+        color: "rgba(0,0,0,0.5)",
+        fontSize: 12,
+        fontWeight: "700",
+    },
+    positionValueRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 4,
+    },
+    positionMainValue: {
+        color: "#000",
+        fontSize: 16,
+        fontWeight: "600",
+    },
+    positionUnitValue: {
+        color: "#000",
+        fontSize: 16,
+        fontWeight: "600",
+    },
+    sidePill: {
+        paddingHorizontal: 6,
+        paddingVertical: 1,
+        borderRadius: 4,
+    },
+    sidePillText: {
+        color: "#fff",
+        fontSize: 11,
+        fontWeight: "bold",
+    },
+    returnSubRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        marginTop: -2,
+    },
+    returnPercentText: {
+        color: "#34c759",
+        fontSize: 10,
+        fontWeight: "700",
+    },
+    activitySection: {
+        marginTop: 24,
+    },
+    yourActivityTitle: {
+        color: "rgba(0,0,0,0.25)",
+        fontSize: 16,
+        fontWeight: "700",
+        marginBottom: 0,
+        paddingHorizontal: 8,
+        marginTop: 16,
+    },
+    activityList: {
+        paddingVertical: 8,
+    },
+    rulesSection: {
+        marginTop: 8,
+    },
+    rulesTitleRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+        marginBottom: 8,
+    },
+    rulesTitle: {
+        color: "#000",
+        fontSize: 16,
+        fontWeight: "600",
+    },
+    rulesText: {
+        color: "rgba(0,0,0,0.6)",
+        fontSize: 12,
+        lineHeight: 18,
+    },
+    showMoreRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 4,
+        marginTop: 4,
+    },
+    showMoreText: {
+        color: "#6b7280",
+        fontSize: 12,
+        fontWeight: "600",
+    },
+    aboutStatsGrid: {
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: 8,
+        marginTop: 16,
+    },
+    aboutStatCard: {
+        backgroundColor: "#fff",
+        borderRadius: 16,
+        flex: 1,
+        minWidth: "45%",
+        padding: 12,
+        borderWidth: 1,
+        borderColor: "rgba(0,0,0,0.05)",
+    },
+    activityListContainer: {
+        marginTop: 8,
+        gap: 12,
+        paddingHorizontal: 8,
+    },
+    tradeItem: {
+        flexDirection: "row",
+        justifyContent: "space-between",
+        alignItems: "center",
+        paddingVertical: 12,
+        borderBottomWidth: 1,
+        borderBottomColor: "rgba(0,0,0,0.05)",
+    },
+    tradeInfoMain: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 12,
+    },
+    tradeSideBadge: {
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        borderRadius: 6,
+    },
+    tradeSideText: {
+        fontSize: 10,
+        fontWeight: "800",
+    },
+    tradePriceText: {
+        fontSize: 15,
+        fontWeight: "600",
+        color: "#000",
+    },
+    tradeInfoSide: {
+        alignItems: "flex-end",
+    },
+    tradeSizeText: {
+        fontSize: 14,
+        fontWeight: "500",
+        color: "#374151",
+    },
+    tradeTimeText: {
+        fontSize: 12,
+        color: "#9ca3af",
+        marginTop: 2,
+    },
+    aboutStatHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 4,
+        paddingHorizontal: 7,
+        paddingTop: 2,
+    },
+    aboutStatLabel: {
+        color: "#9ca3af",
+        fontSize: 12,
+        fontWeight: "bold",
+    },
+    aboutStatValueBox: {
+        backgroundColor: "#f9f9f9",
+        borderRadius: 12,
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        height: 48,
+        justifyContent: "center",
+    },
+    aboutStatValue: {
+        color: "#000",
+        fontSize: 22,
+        fontWeight: "bold",
+    },
+    statsGrid: {
+        flexDirection: "row",
+        gap: 12,
+        marginBottom: 24,
+    },
+    statCard: {
+        flex: 1,
+        backgroundColor: "#fff",
+        padding: 12,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: "rgba(0,0,0,0.05)",
+        alignItems: "center",
+        gap: 4,
+    },
+    statLabel: {
+        color: "#666",
+        fontSize: 10,
+        fontWeight: "600",
+        textTransform: "uppercase",
+    },
+    statValue: {
+        color: "#000",
+        fontSize: 14,
+        fontWeight: "bold",
+    },
+    section: {
+        backgroundColor: "#fff",
+        padding: 16,
+        borderRadius: 16,
+        borderWidth: 1,
+        borderColor: "rgba(0,0,0,0.05)",
+    },
+    sectionHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        marginBottom: 12,
+    },
+    sectionTitle: {
+        color: "#000",
+        fontSize: 16,
+        fontWeight: "bold",
+    },
+    descriptionText: {
+        color: "rgba(0,0,0,0.6)",
+        fontSize: 14,
+        lineHeight: 22,
+    },
+    modalOverlay: {
+        flex: 1,
+        backgroundColor: "rgba(0,0,0,0.5)",
+        justifyContent: "flex-end",
+    },
+    modalContent: {
+        maxHeight: "92%",
+        backgroundColor: "#fff",
+        borderTopLeftRadius: 32,
+        borderTopRightRadius: 32,
+        borderCurve: "continuous",
+        padding: 0,
+    },
+    modalHeader: {
+        display: "none",
+    },
+    footer: {
+        position: "absolute",
+        bottom: 0,
+        left: 0,
+        right: 0,
+        backgroundColor: "transparent",
+        paddingHorizontal: 16,
+        paddingTop: 16,
+        paddingBottom: Platform.OS === "ios" ? 34 : 16,
+        flexDirection: "row",
+        gap: 12,
+    },
+    tradeButton: {
+        flex: 1,
+        height: 52,
+        borderRadius: 16,
+        borderCurve: "continuous",
+        overflow: "hidden",
+        alignItems: "center",
+        justifyContent: "center",
+        borderWidth: 1.5,
+        borderColor: "rgba(255,255,255,0.8)",
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.25,
+        shadowRadius: 2,
+        elevation: 2,
+    },
+    buyYesButton: {
+        // No longer specific color, matches deposit
+    },
+    buyNoButton: {
+        // No longer specific color, matches deposit
+    },
+    tradeButtonText: {
+        color: "#000000",
+        fontSize: 20,
+        fontWeight: "600",
+        letterSpacing: -0.6,
+    },
+    pressed: {
+        opacity: 0.9,
+        transform: [{ scale: 0.97 }],
+    },
+    errorContainer: {
+        flex: 1,
+        backgroundColor: "#f5f5f5",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 20,
+    },
+    errorText: {
+        color: "#000",
+        fontSize: 18,
+        marginBottom: 20,
+    },
+    backButton: {
+        backgroundColor: "#a855f7",
+        paddingHorizontal: 24,
+        paddingVertical: 12,
+        borderRadius: 8,
+    },
+    backButtonText: {
+        color: "#fff",
+        fontWeight: "bold",
+    },
+});
+
+export default MarketDetailScreen;

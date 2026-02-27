@@ -1,0 +1,47 @@
+{
+  "expo": {
+    "name": "Perminal-mobile",
+    "slug": "Perminal-mobile",
+    "scheme": "perminal-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.perminal.mobile",
+      "entitlements": {
+        "com.apple.developer.in-app-payments": [
+          "YOUR_MERCHANT_ID_HERE"
+        ]
+      }
+    },
+    "android": {
+      "package": "com.perminal.mobile",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-web-browser",
+      "expo-apple-authentication",
+      [
+        "expo-secure-store",
+        {
+          "faceIDPermission": "Allow $(PRODUCT_NAME) to use FaceID"
+        }
+      ]
+    ]
+  }
+}
