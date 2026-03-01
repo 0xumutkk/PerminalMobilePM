@@ -24,7 +24,7 @@ export function CircularGauge({ percentage, size = 48, strokeWidth = 4 }: Circul
                     cx={size / 2}
                     cy={size / 2}
                     r={radius}
-                    stroke="rgba(255,255,255,0.1)"
+                    stroke="rgba(0,0,0,0.05)"
                     strokeWidth={strokeWidth}
                     fill="transparent"
                 />

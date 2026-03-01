@@ -28,14 +28,16 @@ export default function ExploreScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* Top Bar */}
       <View style={styles.topBar}>
-        <Image
-          source={require("../../../assets/icon.png")}
-          style={styles.logo}
-          contentFit="contain"
-        />
+        <View style={styles.headerLeft}>
+          <Image
+            source={require("../../../assets/icon.png")}
+            style={styles.logo}
+            contentFit="contain"
+          />
+        </View>
         <Text style={styles.feedTitle}>Feed</Text>
         <TouchableOpacity style={styles.gridButton}>
-          <Grid size={22} color="#000" />
+          <Grid size={18} color="#000" strokeWidth={2.5} />
         </TouchableOpacity>
       </View>
 
@@ -82,18 +84,29 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 10,
     backgroundColor: "#000",
   },
-  logo: {
-    width: 32,
-    height: 32,
+  headerLeft: {
+    width: 36,
+    height: 36,
+    backgroundColor: "rgba(255,255,255,0.1)",
     borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.1)",
+  },
+  logo: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
   },
   feedTitle: {
     color: "#fff",
     fontSize: 18,
     fontWeight: "700",
+    letterSpacing: -0.4,
   },
   gridButton: {
     width: 36,
@@ -107,21 +120,20 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     paddingHorizontal: 16,
     gap: 24,
-    borderBottomWidth: 1,
-    borderBottomColor: "#1f2937",
     backgroundColor: "#000",
   },
   tabButton: {
-    paddingVertical: 12,
+    paddingVertical: 14,
   },
   tabActive: {
-    borderBottomWidth: 2,
+    borderBottomWidth: 3,
     borderBottomColor: "#fff",
   },
   tabText: {
-    color: "#6b7280",
-    fontSize: 15,
-    fontWeight: "600",
+    color: "rgba(255,255,255,0.4)",
+    fontSize: 16,
+    fontWeight: "700",
+    letterSpacing: -0.4,
   },
   tabTextActive: {
     color: "#fff",
@@ -129,17 +141,17 @@ const styles = StyleSheet.create({
   fab: {
     position: "absolute",
     right: 20,
-    bottom: 100,
+    bottom: 110,
     width: 56,
     height: 56,
     borderRadius: 28,
     backgroundColor: "#34d399",
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: "#34d399",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 8,
-    elevation: 8,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 10,
   },
 });

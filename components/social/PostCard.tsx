@@ -60,12 +60,12 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
     // Figma Colors: 
     // Position: #0088FF (Blue)
     // Thesis: #D9D9D9 (Grey)
-    // Sold: #FF383C (Red) - using lower opacity forSold background as per visual vibe
+    // Sold: #FF383C (Red)
     const cardBgColor = isPosition ? "#0088FF" : isSold ? "#FF383C" : "#D9D9D9";
 
     // Header Badge Styles
-    const headerBadgeBg = isPosition ? "rgba(59, 130, 247, 0.25)" : isSold ? "rgba(237, 66, 40, 0.25)" : "rgba(0, 0, 0, 0.15)";
-    const headerBadgeText = isPosition ? "#0088FF" : isSold ? "#FF383C" : "#171717";
+    const headerBadgeBg = isPosition ? "rgba(63, 142, 247, 0.25)" : isSold ? "rgba(237, 66, 40, 0.25)" : "#D9D9D9";
+    const headerBadgeText = isPosition ? "#088FFF" : isSold ? "#FF383C" : "#171717";
 
     // Text themes
     const footerTextColor = (isPosition || isSold) ? "#FFFFFF" : "#000000";
@@ -137,7 +137,7 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
                             <Text style={styles.marketQuestion} numberOfLines={2}>
                                 {post.market_question || "Market question loading..."}
                             </Text>
-                            <CircularGauge percentage={51} size={40} />
+                            <CircularGauge percentage={51} size={32} />
                         </View>
 
                         {/* Middle Row (Metric Pill + Details) - Only for Position/Sold */}
@@ -163,14 +163,14 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
                                 <View style={styles.footerMetricColumn}>
                                     <Text style={[styles.footerMetricLabel, { color: footerSubTextColor }]}>Avg. Entry</Text>
                                     <Text style={[styles.footerMetricValue, { color: footerTextColor }]}>
-                                        {Math.round((tradeData.avg_entry || 0.47) * 100)}¢
+                                        {Math.round((tradeData.avg_entry || 0.47) * 100)}<Text style={{ fontWeight: '400' }}>¢</Text>
                                     </Text>
                                 </View>
                             )}
                             <View style={styles.footerMetricColumn}>
                                 <Text style={[styles.footerMetricLabel, { color: footerSubTextColor }]}>Current Price</Text>
                                 <Text style={[styles.footerMetricValue, { color: footerTextColor }]}>
-                                    {Math.round((tradeData.current_price || 0.97) * 100)}¢
+                                    {Math.round((tradeData.current_price || 0.97) * 100)}<Text style={{ fontWeight: '400' }}>¢</Text>
                                 </Text>
                             </View>
                         </View>
@@ -189,23 +189,23 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
             <View style={styles.actionBar}>
                 <View style={styles.actionBarLeft}>
                     <TouchableOpacity style={styles.actionItem} onPress={handleLike}>
-                        <ArrowUp size={16} color={liked ? "#34d399" : "#171717"} />
-                        <Text style={[styles.actionItemText, liked && styles.textGreen]}>{formatCount(likesCount)}</Text>
+                        <ArrowUp size={16} color={liked ? "#34c759" : "#171717"} strokeWidth={liked ? 2.5 : 2} />
+                        <Text style={[styles.actionItemText, liked && { color: "#34c759" }]}>{formatCount(likesCount)}</Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity style={styles.actionItem}>
-                        <ArrowDown size={16} color="#171717" />
+                        <ArrowDown size={16} color="#171717" opacity={0.5} strokeWidth={2} />
                         <Text style={styles.actionItemText}>2.3K</Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity style={styles.actionItem} onPress={handleRepost}>
-                        <Repeat2 size={16} color={reposted ? "#34d399" : "#171717"} />
-                        <Text style={[styles.actionItemText, reposted && styles.textGreen]}>{formatCount(repostsCount)}</Text>
+                        <Repeat2 size={16} color={reposted ? "#34c759" : "#171717"} strokeWidth={reposted ? 2.5 : 2} />
+                        <Text style={[styles.actionItemText, reposted && { color: "#34c759" }]}>{formatCount(repostsCount)}</Text>
                     </TouchableOpacity>
                 </View>
 
                 <TouchableOpacity style={styles.actionItem}>
-                    <Share2 size={16} color="#171717" style={{ opacity: 0.5 }} />
+                    <Share2 size={16} color="#171717" style={{ opacity: 0.3 }} strokeWidth={2} />
                 </TouchableOpacity>
             </View>
         </View>
@@ -255,75 +255,80 @@ const styles = StyleSheet.create({
     },
     displayName: {
         fontSize: 16,
-        fontWeight: "bold",
+        fontWeight: "700",
         color: "#000",
     },
     usernameTime: {
         fontSize: 12,
         color: "rgba(0,0,0,0.5)",
-        fontWeight: "500",
+        fontWeight: "600",
     },
     typeBadge: {
-        paddingHorizontal: 4,
-        paddingVertical: 1,
+        paddingHorizontal: 6,
+        paddingVertical: 2,
         borderRadius: 4,
         justifyContent: 'center',
         alignItems: 'center',
+        marginLeft: 4,
     },
     typeBadgeText: {
         fontSize: 10,
-        fontWeight: "600",
+        fontWeight: "700",
     },
     rightHeader: {
         alignItems: "flex-end",
     },
     pnlText: {
-        fontSize: 16,
-        fontWeight: "bold",
+        fontSize: 20,
+        fontWeight: "800",
         color: "#34c759",
+        letterSpacing: -0.5,
     },
     proofBadge: {
         flexDirection: "row",
         alignItems: "center",
         gap: 2,
+        marginTop: 2,
     },
     proofBadgeText: {
         fontSize: 10,
-        color: "#34d399",
-        fontWeight: "bold",
+        color: "#34c759",
+        fontWeight: "700",
     },
     contentWrapper: {
         flexDirection: 'row',
         gap: 6,
         marginBottom: 8,
+        minHeight: 40,
     },
     contentLine: {
         width: 1,
-        backgroundColor: "rgba(0,0,0,0.15)",
+        backgroundColor: "rgba(0,0,0,0.08)",
         marginVertical: 4,
         borderRadius: 1,
-        height: 94, // Matching Figma line height
     },
     postContent: {
         flex: 1,
         fontSize: 12,
         color: "#000",
         lineHeight: 18,
-        fontWeight: "500",
+        fontWeight: "600",
     },
     marketCard: {
         borderRadius: 16,
         padding: 4,
         marginBottom: 12,
+        marginLeft: 6, // Offset to align under contentLine better
     },
     marketInnerCard: {
         backgroundColor: "#fff",
         borderRadius: 12,
         padding: 8,
+        paddingVertical: 10,
     },
     marketHeader: {
         flexDirection: "row",
-        alignItems: "center",
+        alignItems: "flex-start",
         gap: 10,
     },
     marketImageWrapper: {
@@ -331,8 +336,8 @@ const styles = StyleSheet.create({
         height: 40,
         borderRadius: 8,
         overflow: 'hidden',
-        borderWidth: 1,
-        borderColor: "rgba(0,0,0,0.15)",
+        borderWidth: 1.5,
+        borderColor: "rgba(0,0,0,0.06)",
     },
     marketImage: {
         width: '100%',
@@ -340,8 +345,8 @@ const styles = StyleSheet.create({
     },
     marketQuestion: {
         flex: 1,
-        fontSize: 12,
-        fontWeight: "600",
+        fontSize: 13,
+        fontWeight: "700",
         color: "#171717",
         lineHeight: 18,
     },
@@ -349,23 +354,24 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
-        marginTop: 16,
+        marginTop: 18,
+        marginBottom: 4,
     },
     outcomePill: {
-        backgroundColor: "rgba(52, 199, 89, 0.25)",
-        paddingHorizontal: 8,
-        paddingVertical: 4,
-        borderRadius: 5,
-        minWidth: 44,
+        backgroundColor: "rgba(52, 199, 89, 0.15)",
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 6,
+        minWidth: 50,
         alignItems: 'center',
     },
     outcomePillSold: {
-        backgroundColor: "rgba(237, 66, 40, 0.25)",
+        backgroundColor: "rgba(237, 66, 40, 0.15)",
     },
     outcomePillText: {
         color: "#34c759",
         fontSize: 16,
-        fontWeight: "600",
+        fontWeight: "700",
     },
     outcomePillTextSold: {
         color: "#FF383C",
@@ -375,16 +381,17 @@ const styles = StyleSheet.create({
         gap: 16,
     },
     metricItemText: {
-        fontSize: 16,
-        fontWeight: "600",
+        fontSize: 18,
+        fontWeight: "700",
         color: "#171717",
+        letterSpacing: -0.4,
     },
     marketFooter: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
         paddingHorizontal: 12,
-        paddingVertical: 6,
+        paddingVertical: 4,
     },
     footerMetrics: {
         flexDirection: 'row',
@@ -395,25 +402,26 @@ const styles = StyleSheet.create({
     },
     footerMetricLabel: {
         fontSize: 12,
-        fontWeight: "bold",
-        opacity: 0.5,
+        fontWeight: "800",
+        opacity: 0.6,
     },
     footerMetricValue: {
-        fontSize: 16,
-        fontWeight: "bold",
+        fontSize: 20,
+        fontWeight: "800",
+        letterSpacing: -0.5,
     },
     tradeActionButton: {
         backgroundColor: "#171717",
-        paddingHorizontal: 20,
-        paddingVertical: 8,
-        borderRadius: 12,
+        paddingHorizontal: 22,
+        paddingVertical: 10,
+        borderRadius: 14,
         borderWidth: 2,
         borderColor: "rgba(255,255,255,0.25)",
     },
     tradeActionButtonText: {
         color: "#fff",
         fontSize: 16,
-        fontWeight: "bold",
+        fontWeight: "800",
     },
     actionBar: {
         flexDirection: "row",
@@ -424,16 +432,16 @@ const styles = StyleSheet.create({
     },
     actionBarLeft: {
         flexDirection: "row",
-        gap: 24,
+        gap: 32,
     },
     actionItem: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 4,
+        gap: 6,
     },
     actionItemText: {
-        fontSize: 12,
-        fontWeight: "600",
+        fontSize: 14,
+        fontWeight: "700",
         color: "#171717",
     },
     textGreen: {

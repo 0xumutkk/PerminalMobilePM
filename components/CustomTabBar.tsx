@@ -10,12 +10,12 @@ import { HomeFilledIcon, GlobeFilledIcon, IncentiveIcon, SearchIcon } from "./Ta
 const PROFILE_AVATAR = "https://www.figma.com/api/mcp/asset/2e4567f9-2300-4518-964f-d6427d5eb261";
 const TAB_BAR_WIDTH = 316;
 const BOTTOM_BLUR_HEIGHT = 240;
-/** Glass background: rgba(255,255,255,0.1) per Figma node 1-14233 */
-const TAB_BAR_BG = "rgba(255,255,255,0.1)";
+/** Glass background: rgba(0,0,0,0.4) per Figma for dark mode */
+const TAB_BAR_BG = "rgba(0,0,0,0.6)";
 /** Selection fill from Figma node 1-14235 */
-const ACTIVE_PILL_BG = "#ededed";
-const ACTIVE_ICON = "#171717";
-const INACTIVE_ICON = "#8e8e8e";
+const ACTIVE_PILL_BG = "rgba(255,255,255,0.15)";
+const ACTIVE_ICON = "#FFFFFF";
+const INACTIVE_ICON = "rgba(255,255,255,0.4)";
 
 type TabIconComponent = React.ComponentType<{ color: string }>;
 const ICONS: Record<string, TabIconComponent> = {
@@ -45,16 +45,16 @@ export function CustomTabBar({ state, descriptors, navigation, insets }: BottomT
         >
             <View style={styles.bottomBlurLayer} pointerEvents="none">
                 <LinearGradient
-                    colors={["rgba(217, 217, 217, 0)", "#f9f9f9"]}
+                    colors={["rgba(0, 0, 0, 0)", "rgba(0,0,0,0.8)"]}
                     locations={[0, 1]}
                     start={{ x: 0.5, y: 0 }}
                     end={{ x: 0.5, y: 1 }}
                     style={StyleSheet.absoluteFill}
                 >
                     <BlurView
-                        intensity={30}
-                        tint="light"
-                        style={[styles.blurview, { top: "67.66%" }]}
+                        intensity={40}
+                        tint="dark"
+                        style={[styles.blurview, { top: "60%" }]}
                     />
                 </LinearGradient>
             </View>
@@ -77,8 +77,8 @@ export function CustomTabBar({ state, descriptors, navigation, insets }: BottomT
                     />
                 ) : (
                     <BlurView
-                        intensity={20}
-                        tint="light"
+                        intensity={30}
+                        tint="dark"
                         style={StyleSheet.absoluteFill}
                     />
                 )}
@@ -138,7 +138,7 @@ export function CustomTabBar({ state, descriptors, navigation, insets }: BottomT
                                         {/* Selection Tint: #ededed 85% opacity to keep it glassy but solid look */}
                                         <View style={[
                                             StyleSheet.absoluteFill,
-                                            { backgroundColor: "rgba(237, 237, 237, 0.85)", borderRadius: 16 }
+                                            { backgroundColor: "rgba(255, 255, 255, 0.12)", borderRadius: 16 }
                                         ]} />
                                         {/* Light Source: -45 deg top-left highlight */}
                                         <LinearGradient
@@ -186,7 +186,7 @@ const styles = StyleSheet.create({
         borderCurve: "continuous",
         overflow: "hidden",
         borderWidth: 1.5,
-        borderColor: "rgba(255,255,255,0.2)", // White rim highlight
+        borderColor: "rgba(255,255,255,0.12)", // White rim highlight
         // Premium subtle shadow
         shadowColor: "#000",
         shadowOffset: { width: 0, height: 4 },

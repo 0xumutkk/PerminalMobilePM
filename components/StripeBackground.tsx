@@ -2,8 +2,8 @@ import React from "react";
 import { View, StyleSheet, Dimensions } from "react-native";
 
 const STRIPE_WIDTH = 8;
-const WHITE = "#FFFFFF";
-const LIGHT_GREY = "#E5E5E5";
+const WHITE = "#171717";
+const LIGHT_GREY = "#1a1a1a";
 
 export function StripeBackground() {
     const { width } = Dimensions.get("window");
