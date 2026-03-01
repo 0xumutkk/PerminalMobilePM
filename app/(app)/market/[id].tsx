@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Pressable, Platform } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -8,25 +8,28 @@ import { GlassView, isLiquidGlassAvailable } from "expo-glass-effect";
 import { LinearGradient } from "expo-linear-gradient";
 import type { Market, ChartPoint } from "../../../lib/mock-data";
 import { useEmbeddedSolanaWallet, isConnected } from "@privy-io/expo";
-import { fetchMarketForApp } from "../../../lib/jupiter";
+import { fetchMarketForApp, fetchJupiterEventById, jupiterEventToMarkets } from "../../../lib/jupiter";
 import { MarketChartNative } from "../../../components/MarketChartNative";
 import { TradePanel } from "../../../components/market/TradePanel";
 import { TradeSide, TradeMode } from "../../../hooks/useTrade";
-
-interface Trade {
-    side: "buy" | "sell";
-    price: number;
-    size: number;
-    timestamp: number;
-    txHash: string;
-}
+import { CircularProgress } from "../../../components/ui/CircularProgress";
 import { Image } from "expo-image";
 import { Modal } from "react-native";
 import { getTokenBalance } from "../../../lib/solana";
 import { GlassHeader } from "../../../components/ui/GlassHeader";
-import { detectCryptoPriceCoinFromMarket, fetchCryptoPriceHistory, fetchCryptoSpotPrice } from "../../../lib/crypto";
+import {
+    fetchClusteredMarketChartFromJupiter,
+    fetchMarketActivityTradesFromJupiter,
+    fetchMarketChartPointsFromJupiter,
+    type ChartRange,
+    type ClusteredMarketInput,
+    type ClusteredMarketSeries,
+    type MarketActivityTrade,
+} from "../../../lib/jupiterChart";
 
-type TabKey = "position" | "about" | "holders" | "activity";
+type Trade = MarketActivityTrade;
+
+type TabKey = "markets" | "positions" | "about" | "holders" | "activity";
 
 const SUPPORTS_GLASS = Platform.OS === "ios" && isLiquidGlassAvailable();
 
@@ -43,19 +46,31 @@ function getMarketIddiaText(market: Pick<Market, "yesLabel" | "noLabel">): strin
     return concrete ?? candidates[0];
 }
 
+function getCleanMarketTitle(title: string, groupTitle: string): string {
+    const gt = groupTitle.toLowerCase().trim();
+    const mt = title.trim();
+    if (mt.toLowerCase().startsWith(gt)) {
+        let clean = mt.slice(gt.length).trim();
+        clean = clean.replace(/^[:\-\s]+/, "");
+        if (clean) return clean;
+    }
+    return mt;
+}
 
 function MarketDetailScreen() {
-    const { id, side: sideParam, tradeMode: tradeModeParam } = useLocalSearchParams<{
+    const { id, side: sideParam, tradeMode: tradeModeParam, single: singleParam, parentId } = useLocalSearchParams<{
         id: string;
         side?: string;
         tradeMode?: string;
+        single?: string;
+        parentId?: string;
     }>();
     const router = useRouter();
     const [market, setMarket] = useState<Market | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-    const [activeTab, setActiveTab] = useState<TabKey>("position");
-    const [activeRange, setActiveRange] = useState<string>("ALL");
+    const [activeTab, setActiveTab] = useState<TabKey>("positions");
+    const [activeRange, setActiveRange] = useState<ChartRange>("ALL");
     const [showTradePanel, setShowTradePanel] = useState(false);
     const [initialSide, setInitialSide] = useState<TradeSide>("YES");
     const [initialTradeMode, setInitialTradeMode] = useState<TradeMode>("BUY");
@@ -65,8 +80,12 @@ function MarketDetailScreen() {
     const [trades, setTrades] = useState<Trade[]>([]);
     const [tradesLoading, setTradesLoading] = useState(false);
     const [chartData, setChartData] = useState<ChartPoint[]>([]);
+    const [clusterMarkets, setClusterMarkets] = useState<ClusteredMarketInput[]>([]);
+    const [clusterChartSeries, setClusterChartSeries] = useState<ClusteredMarketSeries[]>([]);
     const [chartValueType, setChartValueType] = useState<"probability" | "price">("probability");
     const [chartAssetLabel, setChartAssetLabel] = useState<string | undefined>(undefined);
+    const [multiChoiceMarkets, setMultiChoiceMarkets] = useState<Market[]>([]);
+    const [tradingMarket, setTradingMarket] = useState<Market | null>(null);
 
     const solanaWallet = useEmbeddedSolanaWallet();
     const isWalletConnected = isConnected(solanaWallet);
@@ -118,8 +137,20 @@ function MarketDetailScreen() {
 
                 const finalYesPrice = m.yesPrice;
                 const probabilityHistory = m.priceHistory ?? [];
+                const primaryMarketId = m.marketId || m.id;
 
                 setChartData(probabilityHistory);
+                setClusterChartSeries([]);
+                setClusterMarkets(
+                    primaryMarketId
+                        ? [{
+                            marketId: primaryMarketId,
+                            label: m.title,
+                            provider: m.provider,
+                            polymarketAssetId: m.polymarketClobTokenId,
+                        }]
+                        : []
+                );
                 setChartValueType("probability");
                 setChartAssetLabel(undefined);
                 setMarket({
@@ -139,94 +170,157 @@ function MarketDetailScreen() {
 
     useEffect(() => {
         if (!market) return;
+        if (!market.eventId) return;
+        if (singleParam === "true") return;
 
+        let cancelled = false;
+        const loadClusterMarkets = async () => {
+            try {
+                const provider =
+                    market.provider === "polymarket"
+                        ? market.provider
+                        : undefined;
+                const event = await fetchJupiterEventById(market.eventId!, provider);
+                if (!event || cancelled) return;
+
+                const options = jupiterEventToMarkets(event);
+                if (!cancelled) {
+                    setMultiChoiceMarkets(options);
+                    if (options.length > 1) {
+                        setActiveTab("markets");
+                    }
+                }
+
+                const inputs = options
+                    .map((item) => ({
+                        marketId: item.marketId || item.id,
+                        label: item.title,
+                        provider: item.provider,
+                        polymarketAssetId: item.polymarketClobTokenId,
+                    }))
+                    .filter((item) => !!item.marketId);
+
+                const deduped = Array.from(
+                    new Map(inputs.map((item) => [item.marketId, item] as const)).values()
+                );
+
+                if (deduped.length > 1 && !cancelled) {
+                    setClusterMarkets(deduped.slice(0, 6));
+                }
+            } catch (err) {
+                if (!cancelled) {
+                    console.warn("[MarketDetail] Failed to load clustered event markets:", err);
+                }
+            }
+        };
+
+        loadClusterMarkets();
+        return () => {
+            cancelled = true;
+        };
+    }, [market?.eventId, market?.provider]);
+
+    useEffect(() => {
+        if (!market) return;
+        const marketId = market.marketId || market.id;
         const probabilityFallback = market.priceHistory ?? [];
-        const coin = detectCryptoPriceCoinFromMarket(market);
-        if (!coin) {
+        if (!marketId) {
+            setClusterChartSeries([]);
             setChartValueType("probability");
             setChartAssetLabel(undefined);
             setChartData(probabilityFallback);
             return;
         }
 
+        const clusteredCandidates = clusterMarkets
+            .filter((item) => !!item.marketId)
+            .filter((item) => item.marketId !== marketId);
+        const clusteredInputs =
+            clusteredCandidates.length > 0
+                ? [
+                    {
+                        marketId,
+                        label: market.title,
+                        provider: market.provider,
+                        polymarketAssetId: market.polymarketClobTokenId,
+                    },
+                    ...clusteredCandidates,
+                ]
+                : [{
+                    marketId,
+                    label: market.title,
+                    provider: market.provider,
+                    polymarketAssetId: market.polymarketClobTokenId,
+                }];
+
         let cancelled = false;
-        const rangeHours = 6;
+        const loadChart = async () => {
+            try {
+                let points: ChartPoint[] = [];
+                let clusteredSeries: ClusteredMarketSeries[] = [];
 
-        const loadCoinHistory = async () => {
-            const history = await fetchCryptoPriceHistory(coin.id, { rangeHours });
-            if (cancelled) return;
-            if (history.length > 0) {
-                setChartValueType("price");
-                setChartAssetLabel(`${coin.symbol}/USD`);
-                setChartData(history);
-                return;
-            }
-            setChartValueType("probability");
-            setChartAssetLabel(undefined);
-            setChartData(probabilityFallback);
-        };
-
-        const appendSpotPrice = async () => {
-            const spotPrice = await fetchCryptoSpotPrice(coin.id);
-            if (cancelled || spotPrice == null) return;
-
-            setChartValueType("price");
-            setChartAssetLabel(`${coin.symbol}/USD`);
-            setChartData((previous) => {
-                const now = Date.now();
-                const point: ChartPoint = { timestamp: now, value: spotPrice };
-                const previousLooksLikeProbability =
-                    previous.length > 0 &&
-                    previous.every((item) => item.value >= 0 && item.value <= 1.2);
-                const next = previousLooksLikeProbability ? [] : [...previous];
-
-                if (next.length > 0 && now - next[next.length - 1].timestamp < 20_000) {
-                    next[next.length - 1] = point;
+                if (clusteredInputs.length > 1) {
+                    const fallbackPrices: Record<string, number> = {};
+                    for (const mOpts of multiChoiceMarkets) {
+                        if (mOpts.id) fallbackPrices[mOpts.id] = mOpts.yesPrice;
+                    }
+                    clusteredSeries = await fetchClusteredMarketChartFromJupiter(clusteredInputs, activeRange, fallbackPrices);
+                    points = clusteredSeries.find((item) => item.key === marketId)?.data ?? clusteredSeries[0]?.data ?? [];
                 } else {
-                    next.push(point);
+                    points = await fetchMarketChartPointsFromJupiter(marketId, activeRange, {
+                        provider: market.provider,
+                        polymarketAssetId: market.polymarketClobTokenId,
+                        label: market.title,
+                    });
                 }
 
-                const cutoff = now - rangeHours * 3600 * 1000;
-                return next
-                    .filter((item) => item.timestamp >= cutoff)
-                    .slice(-360);
-            });
+                if (cancelled) return;
+                setClusterChartSeries(clusteredSeries);
+                setChartValueType("probability");
+                setChartAssetLabel(undefined);
+                setChartData(points.length > 0 ? points : probabilityFallback);
+            } catch (err) {
+                if (!cancelled) {
+                    console.warn("[MarketDetail] Failed to fetch market chart points:", err);
+                    setClusterChartSeries([]);
+                    setChartValueType("probability");
+                    setChartAssetLabel(undefined);
+                    setChartData(probabilityFallback);
+                }
+            }
         };
 
-        loadCoinHistory();
-        const spotTimer = setInterval(() => {
-            appendSpotPrice();
-        }, 15_000);
-        const historyRefreshTimer = setInterval(() => {
-            loadCoinHistory();
-        }, 120_000);
+        loadChart();
+        const refreshMs = activeRange === "1H" ? 15_000 : 30_000;
+        const timer = setInterval(loadChart, refreshMs);
 
         return () => {
             cancelled = true;
-            clearInterval(spotTimer);
-            clearInterval(historyRefreshTimer);
+            clearInterval(timer);
         };
     }, [
+        activeRange,
         market?.id,
+        market?.marketId,
         market?.title,
-        market?.description,
-        market?.category,
-        market?.ticker,
-        market?.eventTicker,
-        market?.seriesTicker,
-        market?.strikePeriod,
         market?.priceHistory,
+        clusterMarkets,
     ]);
 
     // Fetch trades when Activity tab is selected
     useEffect(() => {
         if (activeTab !== "activity") return;
+        const marketId = market?.marketId || market?.id;
+        if (!marketId) {
+            setTrades([]);
+            return;
+        }
 
         let cancelled = false;
         const loadTrades = async () => {
             setTradesLoading(true);
             try {
-                const recentTrades: Trade[] = []; // Trading history from Jupiter not yet supported in this view
+                const recentTrades = await fetchMarketActivityTradesFromJupiter(marketId);
 
                 if (!cancelled) {
                     setTrades(recentTrades);
@@ -246,7 +340,7 @@ function MarketDetailScreen() {
         return () => {
             cancelled = true;
         };
-    }, [activeTab, id, market?.id, market?.ticker, market?.yesMint, market?.noMint]);
+    }, [activeTab, market?.id, market?.marketId]);
 
     if (loading) {
         return (
@@ -262,7 +356,13 @@ function MarketDetailScreen() {
         return (
             <View style={styles.errorContainer}>
                 <Text style={styles.errorText}>{error ?? "Market not found"}</Text>
-                <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+                <TouchableOpacity onPress={() => {
+                    if (singleParam === "true" && parentId) {
+                        router.replace(`/market/${parentId}`);
+                    } else {
+                        router.back();
+                    }
+                }} style={styles.backButton}>
                     <Text style={styles.backButtonText}>Go Back</Text>
                 </TouchableOpacity>
             </View>
@@ -290,9 +390,10 @@ function MarketDetailScreen() {
     const primaryFooterSide: TradeSide = hasOpenPosition ? preferredBuySide : "YES";
     const secondaryFooterSide: TradeSide = hasOpenPosition ? preferredSellSide : "NO";
 
-    const handleOpenTrade = (side: TradeSide, mode: TradeMode = "BUY") => {
+    const handleOpenTrade = (side: TradeSide, mode: TradeMode = "BUY", marketToTrade?: Market) => {
         setInitialSide(side);
         setInitialTradeMode(mode);
+        setTradingMarket(marketToTrade ?? null);
         setShowTradePanel(true);
     };
 
@@ -305,10 +406,14 @@ function MarketDetailScreen() {
         <SafeAreaView style={styles.container} edges={["top"]}>
             <StatusBar style="dark" />
             <GlassHeader
-                title={market.title}
+                title={market.eventTitle || market.title}
                 onBack={() => {
                     console.log("[MarketDetail] Back pressed");
-                    router.back();
+                    if (singleParam === "true" && parentId) {
+                        router.replace(`/market/${parentId}`);
+                    } else {
+                        router.back();
+                    }
                 }}
                 rightIcon1={<Star color="#000" size={20} strokeWidth={2} />}
                 onRightAction1={() => {
@@ -328,7 +433,10 @@ function MarketDetailScreen() {
                         )}
                     </View>
                     <View style={styles.titleTextContainer}>
-                        <Text style={styles.marketTitle}>{market.title}</Text>
+                        <Text style={styles.marketTitle}>{market.eventTitle || market.title}</Text>
+                        {market.eventTitle && market.title !== market.eventTitle && (
+                            <Text style={styles.marketSubTitle}>{market.title}</Text>
+                        )}
                         {!!marketIddiaText && (
                             <Text style={styles.marketIddiaText} numberOfLines={2}>
                                 {marketIddiaText}
@@ -341,8 +449,9 @@ function MarketDetailScreen() {
                 <MarketChartNative
                     data={chartSeries}
                     color={chartColor}
+                    series={clusterChartSeries}
                     activeRange={activeRange}
-                    onRangeChange={setActiveRange}
+                    onRangeChange={(range) => setActiveRange(range as ChartRange)}
                     valueType={chartValueType}
                     assetLabel={chartAssetLabel}
                 />
@@ -350,7 +459,10 @@ function MarketDetailScreen() {
                 {/* Position / About / Holders / Activity block (chart altı, ~350px) */}
                 <View style={styles.positionBlock}>
                     <View style={styles.tabRow}>
-                        {(["position", "about", "holders", "activity"] as const).map((tab) => (
+                        {(multiChoiceMarkets.length > 1 && singleParam !== "true"
+                            ? (["markets", "positions", "about", "holders", "activity"] as const)
+                            : (["positions", "about", "holders", "activity"] as const)
+                        ).map((tab) => (
                             <TouchableOpacity
                                 key={tab}
                                 onPress={() => setActiveTab(tab)}
@@ -363,7 +475,62 @@ function MarketDetailScreen() {
                         ))}
                     </View>
 
-                    {activeTab === "position" && (
+                    {activeTab === "markets" && multiChoiceMarkets.length > 1 && singleParam !== "true" && (
+                        <View style={styles.marketsTabContent}>
+                            {multiChoiceMarkets.map((m) => {
+                                const cleanLabel = getCleanMarketTitle(m.title, market.title);
+                                const percentage = Math.round(m.yesPrice * 100);
+                                return (
+                                    <Pressable
+                                        key={m.id}
+                                        style={styles.marketCard}
+                                        onPress={() => router.push(`/market/${m.marketId || m.id}?single=true&parentId=${id}`)}
+                                    >
+                                        <View style={styles.marketCardHeader}>
+                                            <View style={styles.marketCardImageContainer}>
+                                                {m.imageUrl || market.imageUrl ? (
+                                                    <Image
+                                                        source={(m.imageUrl || market.imageUrl) as any}
+                                                        style={styles.marketCardImage}
+                                                    />
+                                                ) : (
+                                                    <View style={styles.marketCardImagePlaceholder} />
+                                                )}
+                                            </View>
+                                            <Text style={styles.marketCardTitle} numberOfLines={2}>
+                                                {cleanLabel}
+                                            </Text>
+                                            <CircularProgress percentage={percentage} size={48} strokeWidth={5} />
+                                        </View>
+
+                                        <View style={styles.marketCardButtons}>
+                                            <Pressable style={styles.btnCardYes} onPress={() => handleOpenTrade("YES", "BUY", m)}>
+                                                <Text style={styles.btnTextCardYes}>Yes</Text>
+                                            </Pressable>
+                                            <Pressable style={styles.btnCardNo} onPress={() => handleOpenTrade("NO", "BUY", m)}>
+                                                <Text style={styles.btnTextCardNo}>No</Text>
+                                            </Pressable>
+                                        </View>
+
+                                        <View style={styles.marketCardFooter}>
+                                            <Text style={styles.marketCardVolume}>
+                                                ${(m.volume / 1000000).toFixed(0)}M Volume
+                                            </Text>
+                                            <View style={styles.marketCardTraders}>
+                                                <View style={styles.avatarDots}>
+                                                    <View style={[styles.dot, { backgroundColor: '#34c759' }]} />
+                                                    <View style={[styles.dot, { backgroundColor: '#ff3b30', marginLeft: -6 }]} />
+                                                </View>
+                                                <Text style={styles.tradersCount}>+{Math.floor(m.volume / 8000000) + 12}</Text>
+                                            </View>
+                                        </View>
+                                    </Pressable>
+                                );
+                            })}
+                        </View>
+                    )}
+
+                    {activeTab === "positions" && (
                         <View style={styles.positionTabContent}>
                             {/* Position Summary Card */}
                             <View style={styles.positionSummaryCard}>
@@ -551,13 +718,17 @@ function MarketDetailScreen() {
                                             <View style={styles.tradeInfoMain}>
                                                 <View style={[styles.tradeSideBadge, { backgroundColor: trade.side === "buy" ? "rgba(16, 185, 129, 0.1)" : "rgba(239, 68, 68, 0.1)" }]}>
                                                     <Text style={[styles.tradeSideText, { color: trade.side === "buy" ? "#10b981" : "#ef4444" }]}>
-                                                        {trade.side.toUpperCase()}
+                                                        {trade.side.toUpperCase()} {trade.outcome.toUpperCase()}
                                                     </Text>
                                                 </View>
-                                                <Text style={styles.tradePriceText}>${trade.price.toFixed(2)}</Text>
+                                                <Text style={styles.tradePriceText}>{(trade.price * 100).toFixed(1)}%</Text>
                                             </View>
                                             <View style={styles.tradeInfoSide}>
-                                                <Text style={styles.tradeSizeText}>{trade.size.toLocaleString()} shares</Text>
+                                                <Text style={styles.tradeSizeText}>
+                                                    {trade.sizeUnit === "usd"
+                                                        ? `$${trade.size.toLocaleString("en-US", { maximumFractionDigits: 2 })}`
+                                                        : `${trade.size.toLocaleString("en-US", { maximumFractionDigits: 2 })} shares`}
+                                                </Text>
                                                 <Text style={styles.tradeTimeText}>
                                                     {new Date(trade.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                                 </Text>
@@ -604,7 +775,7 @@ function MarketDetailScreen() {
                 <Pressable style={styles.modalOverlay} onPress={() => setShowTradePanel(false)}>
                     <Pressable style={styles.modalContent} onPress={(e) => e.stopPropagation()}>
                         <TradePanel
-                            market={market}
+                            market={tradingMarket || market}
                             onSuccess={handleTradeSuccess}
                             initialSide={initialSide}
                             initialTradeMode={initialTradeMode}
@@ -751,6 +922,12 @@ const styles = StyleSheet.create({
         fontSize: 20,
         fontWeight: "600",
         lineHeight: 24,
+    },
+    marketSubTitle: {
+        color: "#6b7280",
+        fontSize: 16,
+        fontWeight: "500",
+        marginTop: 2,
     },
     marketIddiaText: {
         marginTop: 4,
@@ -1104,6 +1281,111 @@ const styles = StyleSheet.create({
         color: "#000",
         fontSize: 14,
         fontWeight: "bold",
+    },
+    marketsTabContent: {
+        paddingTop: 16,
+        paddingHorizontal: 4,
+        gap: 16,
+    },
+    marketCard: {
+        backgroundColor: "#fff",
+        borderRadius: 16,
+        padding: 16,
+        borderWidth: 1,
+        borderColor: "rgba(0,0,0,0.05)",
+    },
+    marketCardHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        marginBottom: 16,
+    },
+    marketCardImageContainer: {
+        width: 48,
+        height: 48,
+        borderRadius: 8,
+        overflow: "hidden",
+        backgroundColor: "#f5f5f5",
+        marginRight: 12,
+    },
+    marketCardImage: {
+        width: "100%",
+        height: "100%",
+    },
+    marketCardImagePlaceholder: {
+        width: "100%",
+        height: "100%",
+        backgroundColor: "#e5e7eb",
+    },
+    marketCardTitle: {
+        flex: 1,
+        fontSize: 15,
+        fontWeight: "700",
+        color: "#111827",
+        lineHeight: 20,
+        marginRight: 12,
+    },
+    marketCardButtons: {
+        flexDirection: "row",
+        gap: 8,
+        marginBottom: 16,
+    },
+    btnCardYes: {
+        flex: 1,
+        height: 48,
+        backgroundColor: "rgba(52, 199, 89, 0.15)",
+        borderRadius: 12,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    btnCardNo: {
+        flex: 1,
+        height: 48,
+        backgroundColor: "rgba(255, 59, 48, 0.15)",
+        borderRadius: 12,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    btnTextCardYes: {
+        color: "#34c759",
+        fontSize: 16,
+        fontWeight: "700",
+    },
+    btnTextCardNo: {
+        color: "#ff3b30",
+        fontSize: 16,
+        fontWeight: "700",
+    },
+    marketCardFooter: {
+        flexDirection: "row",
+        justifyContent: "space-between",
+        alignItems: "center",
+    },
+    marketCardVolume: {
+        fontSize: 14,
+        fontWeight: "600",
+        color: "#9ca3af",
+    },
+    marketCardTraders: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+    },
+    avatarDots: {
+        flexDirection: "row",
+        alignItems: "center",
+    },
+    dot: {
+        width: 16,
+        height: 16,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: "#fff",
+    },
+    tradersCount: {
+        fontSize: 14,
+        fontWeight: "700",
+        color: "#111827",
     },
     section: {
         backgroundColor: "#fff",
