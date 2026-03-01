@@ -20,7 +20,9 @@ export interface Market {
 
     // Jupiter extension fields
     marketId?: string;
+    polymarketClobTokenId?: string;
     eventId?: string;
+    eventTitle?: string;
     provider?: "polymarket" | "kalshi" | string;
     buyYesPriceUsd?: number | null;
     buyNoPriceUsd?: number | null;

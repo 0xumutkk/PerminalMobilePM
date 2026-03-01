@@ -44,14 +44,19 @@ export function CustomTabBar({ state, descriptors, navigation, insets }: BottomT
             pointerEvents="box-none"
         >
             <View style={styles.bottomBlurLayer} pointerEvents="none">
-                <BlurView intensity={14} tint="light" style={StyleSheet.absoluteFill} />
                 <LinearGradient
-                    colors={["rgba(217,217,217,0)", "#f9f9f9"]}
-                    locations={[0.4204, 0.9005]}
+                    colors={["rgba(217, 217, 217, 0)", "#f9f9f9"]}
+                    locations={[0, 1]}
                     start={{ x: 0.5, y: 0 }}
                     end={{ x: 0.5, y: 1 }}
                     style={StyleSheet.absoluteFill}
-                />
+                >
+                    <BlurView
+                        intensity={30}
+                        tint="light"
+                        style={[styles.blurview, { top: "67.66%" }]}
+                    />
+                </LinearGradient>
             </View>
 
             <View
@@ -244,5 +249,9 @@ const styles = StyleSheet.create({
     profileIcon: {
         width: "100%",
         height: "100%",
+    },
+    blurview: {
+        ...StyleSheet.absoluteFillObject,
+        opacity: 1,
     },
 });

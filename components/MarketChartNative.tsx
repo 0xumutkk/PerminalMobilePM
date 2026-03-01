@@ -1,14 +1,22 @@
 import React from "react";
 import { View, StyleSheet, Dimensions, Text, Pressable } from "react-native";
 import Svg, { Path, Defs, LinearGradient, Stop, Line, Circle } from "react-native-svg";
-import { type ChartPoint } from "../lib/mock-data";
 import { Image } from "expo-image";
+import { type ChartPoint } from "../lib/mock-data";
 
 export type ChartValueType = "probability" | "price";
+
+export interface MarketChartLineSeries {
+    key: string;
+    label?: string;
+    color: string;
+    data: ChartPoint[];
+}
 
 export interface MarketChartNativeProps {
     data: ChartPoint[];
     color?: string;
+    series?: MarketChartLineSeries[];
     activeRange?: string;
     onRangeChange?: (range: string) => void;
     valueType?: ChartValueType;
@@ -16,7 +24,7 @@ export interface MarketChartNativeProps {
 }
 
 const MAX_POINTS = 60;
-const TIME_RANGES = ["1H", "6H", "1D", "1W", "1M", "ALL"];
+const TIME_RANGES = ["1H", "6H", "1D", "1W", "1M", "ALL"] as const;
 
 function formatUsd(value: number): string {
     if (!Number.isFinite(value)) return "$0.00";
@@ -33,7 +41,6 @@ function formatXAxisLabel(timestamp: number): string {
     return date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
 }
 
-/** Downsample data to at most maxPoints using LTTB-like bucket averaging */
 function downsample(data: ChartPoint[], maxPoints: number): ChartPoint[] {
     if (data.length <= maxPoints) return data;
     const step = data.length / maxPoints;
@@ -41,7 +48,9 @@ function downsample(data: ChartPoint[], maxPoints: number): ChartPoint[] {
     for (let i = 1; i < maxPoints - 1; i++) {
         const start = Math.floor(i * step);
         const end = Math.floor((i + 1) * step);
-        let sumT = 0, sumV = 0, count = 0;
+        let sumT = 0;
+        let sumV = 0;
+        let count = 0;
         for (let j = start; j < end && j < data.length; j++) {
             sumT += data[j].timestamp;
             sumV += data[j].value;
@@ -53,7 +62,6 @@ function downsample(data: ChartPoint[], maxPoints: number): ChartPoint[] {
     return result;
 }
 
-/** Generate smooth cubic bezier SVG path through points */
 function smoothPath(points: { x: number; y: number }[]): string {
     if (points.length < 2) return "";
     if (points.length === 2) {
@@ -86,10 +94,31 @@ function buildAreaPath(points: { x: number; y: number }[], linePath: string, bas
     return `${linePath} L ${last.x} ${baselineY} L ${first.x} ${baselineY} Z`;
 }
 
-/** Redesigned Market Chart matching Figma node 1:7274 (Light Theme) */
+function toScreenPoints(
+    sampled: ChartPoint[],
+    padding: { top: number; right: number; bottom: number; left: number },
+    innerWidth: number,
+    innerHeight: number,
+    yMin: number,
+    yRange: number
+): { x: number; y: number }[] {
+    const n = sampled.length;
+    return sampled
+        .map((d, i) => {
+            const x =
+                n === 1
+                    ? padding.left + innerWidth
+                    : padding.left + (i / Math.max(n - 1, 1)) * innerWidth;
+            const y = padding.top + innerHeight - ((d.value - yMin) / yRange) * innerHeight;
+            return { x, y };
+        })
+        .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+}
+
 export function MarketChartNative({
     data,
     color = "#34c759",
+    series = [],
     activeRange = "ALL",
     onRangeChange,
     valueType = "probability",
@@ -102,7 +131,20 @@ export function MarketChartNative({
     const innerHeight = chartHeight - padding.top - padding.bottom;
 
     const validData = (data ?? []).filter((point) => Number.isFinite(point.timestamp) && Number.isFinite(point.value));
-    if (validData.length === 0) {
+    const validSeries = (series ?? [])
+        .map((item) => ({
+            ...item,
+            data: (item.data ?? []).filter((point) => Number.isFinite(point.timestamp) && Number.isFinite(point.value)),
+        }))
+        .filter((item) => item.data.length > 0);
+
+    const clusteredMode = validSeries.length > 1;
+    const singleSource =
+        validSeries.length === 1 && validData.length === 0
+            ? validSeries[0].data
+            : validData;
+
+    if (!clusteredMode && singleSource.length === 0) {
         return (
             <View style={[styles.container, styles.emptyContainer]}>
                 <Text style={styles.emptyText}>No chart data available</Text>
@@ -110,12 +152,29 @@ export function MarketChartNative({
         );
     }
 
-    const sampled = downsample(validData, MAX_POINTS);
-    const endVal = sampled[sampled.length - 1]?.value ?? 0;
-    const values = sampled.map((point) => point.value);
+    const sampledSingle = downsample(singleSource, MAX_POINTS);
+    const sampledSeries = validSeries.map((item) => ({
+        ...item,
+        sampled: downsample(item.data, MAX_POINTS),
+    }));
+
+    const clusterAllPoints = sampledSeries.flatMap((item) => item.sampled);
+    const values = clusteredMode
+        ? clusterAllPoints.map((point) => point.value)
+        : sampledSingle.map((point) => point.value);
+
+    const startTs = clusteredMode
+        ? Math.min(...clusterAllPoints.map((point) => point.timestamp))
+        : (sampledSingle[0]?.timestamp ?? 0);
+    const endTs = clusteredMode
+        ? Math.max(...clusterAllPoints.map((point) => point.timestamp))
+        : (sampledSingle[sampledSingle.length - 1]?.timestamp ?? 0);
 
     let yMin = 0;
     let yMax = 1;
+
+    // For clusteredMode, valueType is almost always probability. The only time we do dynamic yMin/yMax is if valueType === "price".
+    // Wait, let's just make it always dynamic if it's "price", else probability 0..1.
     if (valueType === "price") {
         const rawMin = Math.min(...values);
         const rawMax = Math.max(...values);
@@ -132,58 +191,65 @@ export function MarketChartNative({
             }
         }
     }
+
     const yRange = Math.max(yMax - yMin, 1e-9);
-    const n = sampled.length;
-
-    const points = sampled.map((d, i) => {
-        const x = padding.left + (i / Math.max(n - 1, 1)) * innerWidth;
-        const y = padding.top + innerHeight - ((d.value - yMin) / yRange) * innerHeight;
-        return { x, y };
-    }).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
-
-    if (points.length === 0) {
-        return (
-            <View style={[styles.container, styles.emptyContainer]}>
-                <Text style={styles.emptyText}>No chart data available</Text>
-            </View>
-        );
-    }
-
-    const pathD = smoothPath(points);
-    const fallbackLinePath =
-        points.length >= 1
-            ? `M ${points[0].x} ${points[0].y} L ${points[points.length - 1].x} ${points[points.length - 1].y}`
-            : "";
-    const linePath = pathD || fallbackLinePath;
-    const areaPath = buildAreaPath(points, linePath, padding.top + innerHeight);
-    const lastPoint = points[points.length - 1];
-
     const gridFractions = [0, 0.25, 0.5, 0.75, 1];
-    const startTs = sampled[0]?.timestamp ?? 0;
-    const endTs = sampled[sampled.length - 1]?.timestamp ?? 0;
+
+    const singlePoints = toScreenPoints(sampledSingle, padding, innerWidth, innerHeight, yMin, yRange);
+    const singlePath = smoothPath(singlePoints);
+    const singleFallback = (() => {
+        if (singlePoints.length === 0) return "";
+        if (singlePoints.length === 1) {
+            return `M ${padding.left} ${singlePoints[0].y} L ${padding.left + innerWidth} ${singlePoints[0].y}`;
+        }
+        return `M ${singlePoints[0].x} ${singlePoints[0].y} L ${singlePoints[singlePoints.length - 1].x} ${singlePoints[singlePoints.length - 1].y}`;
+    })();
+    const linePath = singlePath || singleFallback;
+    const areaPath = buildAreaPath(singlePoints, linePath, padding.top + innerHeight);
+    const lastPoint = singlePoints[singlePoints.length - 1];
+
+    const clusteredPaths = sampledSeries.map((item) => {
+        const points = toScreenPoints(item.sampled, padding, innerWidth, innerHeight, yMin, yRange);
+        const pathD = smoothPath(points);
+        const fallback = (() => {
+            if (points.length === 0) return "";
+            if (points.length === 1) {
+                return `M ${padding.left} ${points[0].y} L ${padding.left + innerWidth} ${points[0].y}`;
+            }
+            return `M ${points[0].x} ${points[0].y} L ${points[points.length - 1].x} ${points[points.length - 1].y}`;
+        })();
+        return {
+            key: item.key,
+            color: item.color,
+            path: pathD || fallback,
+            last: points[points.length - 1],
+        };
+    });
+
+    const endVal = (clusteredMode ? clusterAllPoints : sampledSingle)[(clusteredMode ? clusterAllPoints : sampledSingle).length - 1]?.value ?? 0;
     const currentPrimaryText = valueType === "price" ? formatUsd(endVal) : `${Math.round(endVal * 100)}%`;
     const currentSecondaryText = valueType === "price" ? (assetLabel ?? "USD") : "chance";
 
     return (
         <View style={styles.container}>
-            {/* Top Row: Price & Brand */}
-            <View style={styles.headerRow}>
-                <View style={styles.priceContainer}>
-                    <Text style={styles.priceText}>{currentPrimaryText}</Text>
-                    <Text style={styles.priceLabel}>{currentSecondaryText}</Text>
+            {!clusteredMode ? (
+                <View style={styles.headerRow}>
+                    <View style={styles.priceContainer}>
+                        <Text style={styles.priceText}>{currentPrimaryText}</Text>
+                        <Text style={styles.priceLabel}>{currentSecondaryText}</Text>
+                    </View>
+                    <View style={styles.brandContainer}>
+                        <Image
+                            source={require("../assets/logo.png")}
+                            style={styles.brandLogo}
+                            contentFit="contain"
+                        />
+                        <Text style={styles.brandText}>Perminal</Text>
+                    </View>
                 </View>
-                <View style={styles.brandContainer}>
-                    <Image
-                        source={require("../assets/logo.png")}
-                        style={styles.brandLogo}
-                        contentFit="contain"
-                    />
-                    <Text style={styles.brandText}>Perminal</Text>
-                </View>
-            </View>
+            ) : null}
 
-            {/* SVG Chart Area */}
-            <View style={styles.chartArea}>
+            <View style={[styles.chartArea, clusteredMode && styles.clusterChartArea]}>
                 <Svg width={chartWidth} height={chartHeight}>
                     <Defs>
                         <LinearGradient id="chartGradient" x1="0" y1="0" x2="0" y2="1">
@@ -192,7 +258,6 @@ export function MarketChartNative({
                         </LinearGradient>
                     </Defs>
 
-                    {/* Grid Lines */}
                     {gridFractions.map((fraction) => {
                         const y = padding.top + innerHeight - fraction * innerHeight;
                         return (
@@ -202,43 +267,52 @@ export function MarketChartNative({
                                 y1={y}
                                 x2={padding.left + innerWidth}
                                 y2={y}
-                                stroke="rgba(0,0,0,0.1)"
+                                stroke={clusteredMode ? "rgba(255,255,255,0.22)" : "rgba(0,0,0,0.1)"}
                                 strokeWidth={1}
                                 strokeDasharray="4, 4"
                             />
                         );
                     })}
 
-                    {/* Area fill */}
-                    {areaPath ? (
-                        <Path
-                            d={areaPath}
-                            fill="url(#chartGradient)"
-                        />
+                    {!clusteredMode && areaPath ? (
+                        <Path d={areaPath} fill="url(#chartGradient)" />
                     ) : null}
 
-                    {/* Main line */}
-                    {linePath ? (
-                        <Path
-                            d={linePath}
-                            stroke={color}
-                            strokeWidth={2.5}
-                            fill="none"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                        />
-                    ) : null}
-
-                    {/* Current point dot */}
-                    <Circle
-                        cx={lastPoint.x}
-                        cy={lastPoint.y}
-                        r={4}
-                        fill={color}
-                    />
+                    {clusteredMode
+                        ? clusteredPaths.map((item) => (
+                            <React.Fragment key={item.key}>
+                                {item.path ? (
+                                    <Path
+                                        d={item.path}
+                                        stroke={item.color}
+                                        strokeWidth={2.5}
+                                        fill="none"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                    />
+                                ) : null}
+                                {item.last ? (
+                                    <Circle cx={item.last.x} cy={item.last.y} r={3.2} fill={item.color} />
+                                ) : null}
+                            </React.Fragment>
+                        ))
+                        : (
+                            <>
+                                {linePath ? (
+                                    <Path
+                                        d={linePath}
+                                        stroke={color}
+                                        strokeWidth={2.5}
+                                        fill="none"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                    />
+                                ) : null}
+                                {lastPoint ? <Circle cx={lastPoint.x} cy={lastPoint.y} r={4} fill={color} /> : null}
+                            </>
+                        )}
                 </Svg>
 
-                {/* Grid Labels Overlay */}
                 <View style={styles.gridLabelsOverlay} pointerEvents="none">
                     {gridFractions.map((fraction) => {
                         const y = padding.top + innerHeight - fraction * innerHeight;
@@ -255,16 +329,14 @@ export function MarketChartNative({
                 </View>
             </View>
 
-            {/* X-Axis labels */}
             <View style={styles.xAxisContainer}>
-                <View style={styles.xAxisLine} />
+                <View style={[styles.xAxisLine, clusteredMode && styles.clusterAxisLine]} />
                 <View style={styles.xAxisLabels}>
-                    <Text style={styles.xAxisText}>{formatXAxisLabel(startTs)}</Text>
-                    <Text style={styles.xAxisText}>{formatXAxisLabel(endTs)}</Text>
+                    <Text style={[styles.xAxisText, clusteredMode && styles.clusterAxisText]}>{formatXAxisLabel(startTs)}</Text>
+                    <Text style={[styles.xAxisText, clusteredMode && styles.clusterAxisText]}>{formatXAxisLabel(endTs)}</Text>
                 </View>
             </View>
 
-            {/* Time Range Pills */}
             <View style={styles.rangeContainer}>
                 {TIME_RANGES.map((range) => {
                     const isActive = range === activeRange;
@@ -340,7 +412,14 @@ const styles = StyleSheet.create({
         color: "#000",
     },
     chartArea: {
-        position: 'relative',
+        position: "relative",
+    },
+    clusterChartArea: {
+        backgroundColor: "#ffffff",
+        borderRadius: 14,
+        overflow: "hidden",
+        borderWidth: 1,
+        borderColor: "rgba(0,0,0,0.06)",
     },
     gridLabelsOverlay: {
         ...StyleSheet.absoluteFillObject,
@@ -349,7 +428,7 @@ const styles = StyleSheet.create({
         width: 72,
     },
     gridLabel: {
-        position: 'absolute',
+        position: "absolute",
         right: 0,
         fontSize: 11,
         fontWeight: "600",
@@ -364,6 +443,9 @@ const styles = StyleSheet.create({
         backgroundColor: "rgba(0,0,0,0.1)",
         width: "100%",
     },
+    clusterAxisLine: {
+        backgroundColor: "rgba(0,0,0,0.08)",
+    },
     xAxisLabels: {
         flexDirection: "row",
         justifyContent: "space-around",
@@ -375,6 +457,9 @@ const styles = StyleSheet.create({
         color: "rgba(0,0,0,0.3)",
         textAlign: "center",
         width: "50%",
+    },
+    clusterAxisText: {
+        color: "rgba(0,0,0,0.45)",
     },
     rangeContainer: {
         flexDirection: "row",

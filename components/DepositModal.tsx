@@ -1,60 +1,117 @@
-import React from "react";
-import { View, Text, StyleSheet, TouchableOpacity, Modal, Platform } from "react-native";
+import React, { useEffect, useRef } from "react";
+import { View, Text, StyleSheet, TouchableOpacity, Modal, Platform, Animated, Dimensions } from "react-native";
 import { GlassView, isLiquidGlassAvailable } from "expo-glass-effect";
-import { X, CreditCard, ChevronRight } from "lucide-react-native";
-import { Image } from "expo-image";
+import { X, CreditCard, ChevronRight, Scan, Smartphone, Globe } from "lucide-react-native";
 
 interface DepositModalProps {
     visible: boolean;
     onClose: () => void;
-    onSelectMethod: (method: "apple_pay" | "google_pay" | "card") => void;
+    onSelectMethod: (method: "apple_pay" | "google_pay" | "card" | "crypto") => void;
 }
 
-const SUPPORTS_GLASS = Platform.OS === "ios" && isLiquidGlassAvailable();
+const { height: SCREEN_HEIGHT } = Dimensions.get("window");
 
 export function DepositModal({ visible, onClose, onSelectMethod }: DepositModalProps) {
+    const fadeAnim = useRef(new Animated.Value(0)).current;
+    const slideAnim = useRef(new Animated.Value(SCREEN_HEIGHT)).current;
+
+    useEffect(() => {
+        if (visible) {
+            Animated.parallel([
+                Animated.timing(fadeAnim, {
+                    toValue: 1,
+                    duration: 300,
+                    useNativeDriver: true,
+                }),
+                Animated.spring(slideAnim, {
+                    toValue: 0,
+                    tension: 50,
+                    friction: 8,
+                    useNativeDriver: true,
+                }),
+            ]).start();
+        } else {
+            fadeAnim.setValue(0);
+            slideAnim.setValue(SCREEN_HEIGHT);
+        }
+    }, [visible]);
+
+    const handleClose = () => {
+        Animated.parallel([
+            Animated.timing(fadeAnim, {
+                toValue: 0,
+                duration: 250,
+                useNativeDriver: true,
+            }),
+            Animated.timing(slideAnim, {
+                toValue: SCREEN_HEIGHT,
+                duration: 250,
+                useNativeDriver: true,
+            }),
+        ]).start(() => {
+            onClose();
+        });
+    };
+
     return (
         <Modal
             visible={visible}
-            animationType="slide"
+            animationType="none"
             transparent={true}
-            onRequestClose={onClose}
+            onRequestClose={handleClose}
         >
-            <TouchableOpacity
-                style={styles.overlay}
-                activeOpacity={1}
-                onPress={onClose}
-            >
-                <TouchableOpacity
-                    style={styles.content}
-                    activeOpacity={1}
+            <View style={styles.container}>
+                <Animated.View
+                    style={[
+                        styles.overlay,
+                        { opacity: fadeAnim }
+                    ]}
                 >
-                    {SUPPORTS_GLASS ? (
-                        <GlassView style={StyleSheet.absoluteFill} glassEffectStyle="regular" />
-                    ) : null}
+                    <TouchableOpacity
+                        style={StyleSheet.absoluteFill}
+                        activeOpacity={1}
+                        onPress={handleClose}
+                    />
+                </Animated.View>
+
+                <Animated.View
+                    style={[
+                        styles.content,
+                        { transform: [{ translateY: slideAnim }] }
+                    ]}
+                >
+                    <View style={styles.handle} />
+
                     <View style={styles.header}>
-                        <Text style={styles.title}>Deposit Funds</Text>
-                        <TouchableOpacity onPress={onClose} style={styles.closeButton}>
-                            <X color="#fff" size={24} />
-                        </TouchableOpacity>
+                        <Text style={styles.title}>Deposit</Text>
                     </View>
 
-                    <Text style={styles.subtitle}>Select your preferred payment method to fund your wallet.</Text>
-
                     <View style={styles.methodList}>
+                        <TouchableOpacity
+                            style={styles.methodButton}
+                            onPress={() => onSelectMethod("crypto")}
+                        >
+                            <View style={styles.methodInfo}>
+                                <Text style={styles.methodTitle}>Crypto</Text>
+                                <Text style={styles.methodDesc}>Receive USDC from a crypto wallet</Text>
+                            </View>
+                            <View style={[styles.iconContainer]}>
+                                <Scan color="#000" size={28} strokeWidth={2} />
+                            </View>
+                        </TouchableOpacity>
+
                         {Platform.OS === "ios" && (
                             <TouchableOpacity
                                 style={styles.methodButton}
                                 onPress={() => onSelectMethod("apple_pay")}
                             >
-                                <View style={[styles.iconContainer, styles.appleIcon]}>
-                                    <Text style={styles.appleText}>Pay</Text>
-                                </View>
                                 <View style={styles.methodInfo}>
                                     <Text style={styles.methodTitle}>Apple Pay</Text>
-                                    <Text style={styles.methodDesc}>Fast and secure checkout</Text>
+                                    <Text style={styles.methodDesc}>Buy any prediction or deposit USDC with Apple Pay</Text>
                                 </View>
-                                <ChevronRight color="#4b5563" size={20} />
+                                <View style={[styles.iconContainer]}>
+                                    <Smartphone color="#000" size={28} strokeWidth={2} />
+                                </View>
                             </TouchableOpacity>
                         )}
 
@@ -63,14 +120,13 @@ export function DepositModal({ visible, onClose, onSelectMethod }: DepositModalP
                                 style={styles.methodButton}
                                 onPress={() => onSelectMethod("google_pay")}
                             >
-                                <View style={[styles.iconContainer, styles.googleIcon]}>
-                                    <Text style={styles.googleText}>G Pay</Text>
-                                </View>
                                 <View style={styles.methodInfo}>
                                     <Text style={styles.methodTitle}>Google Pay</Text>
                                     <Text style={styles.methodDesc}>Pay with your Google account</Text>
                                 </View>
-                                <ChevronRight color="#4b5563" size={20} />
+                                <View style={[styles.iconContainer]}>
+                                    <Globe color="#000" size={28} strokeWidth={2} />
+                                </View>
                             </TouchableOpacity>
                         )}
 
@@ -78,14 +134,13 @@ export function DepositModal({ visible, onClose, onSelectMethod }: DepositModalP
                             style={styles.methodButton}
                             onPress={() => onSelectMethod("card")}
                         >
-                            <View style={[styles.iconContainer, styles.cardIcon]}>
-                                <CreditCard color="#fff" size={20} />
-                            </View>
                             <View style={styles.methodInfo}>
-                                <Text style={styles.methodTitle}>Debit / Credit Card</Text>
-                                <Text style={styles.methodDesc}>Visa, Mastercard, and more</Text>
+                                <Text style={styles.methodTitle}>Debit Card</Text>
+                                <Text style={styles.methodDesc}>Deposit USDC with your card</Text>
                             </View>
-                            <ChevronRight color="#4b5563" size={20} />
+                            <View style={[styles.iconContainer]}>
+                                <CreditCard color="#000" size={28} strokeWidth={2} />
+                            </View>
                         </TouchableOpacity>
                     </View>
 
@@ -94,112 +149,91 @@ export function DepositModal({ visible, onClose, onSelectMethod }: DepositModalP
                             Powered by Privy & MoonPay
                         </Text>
                     </View>
-                </TouchableOpacity>
-            </TouchableOpacity>
+                </Animated.View>
+            </View>
         </Modal>
     );
 }
 
 const styles = StyleSheet.create({
-    overlay: {
+    container: {
         flex: 1,
-        backgroundColor: "rgba(0,0,0,0.7)",
         justifyContent: "flex-end",
     },
+    overlay: {
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: "rgba(0,0,0,0.4)",
+    },
     content: {
-        backgroundColor: Platform.OS === "ios" ? "rgba(0,0,0,0.85)" : "#000",
-        borderTopLeftRadius: 32,
-        borderTopRightRadius: 32,
-        padding: 24,
-        paddingBottom: Platform.OS === "ios" ? 40 : 24,
-        borderTopWidth: 1,
-        borderTopColor: "#1f2937",
+        backgroundColor: "#F5F5F5",
+        borderTopLeftRadius: 16,
+        borderTopRightRadius: 16,
+        padding: 8,
+        paddingBottom: Platform.OS === "ios" ? 34 : 16,
         overflow: "hidden",
     },
-    header: {
-        flexDirection: "row",
-        justifyContent: "space-between",
-        alignItems: "center",
+    handle: {
+        width: 36,
+        height: 4,
+        backgroundColor: "#E5E5E5",
+        borderRadius: 2,
+        alignSelf: "center",
         marginBottom: 8,
     },
-    title: {
-        color: "#fff",
-        fontSize: 24,
-        fontWeight: "800",
-    },
-    subtitle: {
-        color: "#9ca3af",
-        fontSize: 15,
-        marginBottom: 32,
-        marginTop: 4,
-    },
-    closeButton: {
-        width: 36,
-        height: 36,
-        borderRadius: 18,
-        backgroundColor: "#1f2937",
+    header: {
         alignItems: "center",
-        justifyContent: "center",
+        marginBottom: 12,
+    },
+    title: {
+        color: "#171717",
+        fontSize: 18,
+        fontWeight: "600",
     },
     methodList: {
-        gap: 12,
+        gap: 8,
     },
     methodButton: {
         flexDirection: "row",
         alignItems: "center",
-        backgroundColor: "#111",
-        borderRadius: 20,
-        padding: 16,
-        borderWidth: 1,
-        borderColor: "#1f2937",
-    },
-    iconContainer: {
-        width: 48,
-        height: 48,
-        borderRadius: 14,
-        alignItems: "center",
-        justifyContent: "center",
-    },
-    appleIcon: {
-        backgroundColor: "#fff",
-    },
-    appleText: {
-        color: "#000",
-        fontWeight: "800",
-        fontSize: 16,
-    },
-    googleIcon: {
-        backgroundColor: "#fff",
-    },
-    googleText: {
-        color: "#5f6368",
-        fontWeight: "bold",
-        fontSize: 16,
-    },
-    cardIcon: {
-        backgroundColor: "#3b0764",
+        backgroundColor: "#FFFFFF",
+        borderRadius: 12,
+        padding: 12,
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.05,
+        shadowRadius: 2,
+        elevation: 1,
     },
     methodInfo: {
         flex: 1,
-        marginLeft: 16,
     },
     methodTitle: {
-        color: "#fff",
-        fontSize: 17,
-        fontWeight: "700",
+        color: "#171717",
+        fontSize: 16,
+        fontWeight: "600",
+        marginBottom: 2,
     },
     methodDesc: {
-        color: "#6b7280",
+        color: "#737373",
         fontSize: 13,
-        marginTop: 2,
+        lineHeight: 16,
+    },
+    iconContainer: {
+        width: 32,
+        height: 32,
+        alignItems: "center",
+        justifyContent: "center",
+        marginLeft: 8,
     },
     footer: {
-        marginTop: 32,
+        marginTop: 16,
         alignItems: "center",
     },
     footerText: {
-        color: "#4b5563",
+        color: "#A3A3A3",
         fontSize: 12,
-        fontWeight: "600",
+        fontWeight: "500",
     },
 });
+
+export default DepositModal;

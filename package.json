@@ -13,7 +13,7 @@
     "@gluestack-ui/core": "^3.0.12",
     "@gluestack-ui/utils": "^3.0.15",
     "@legendapp/motion": "^2.5.3",
-    "@privy-io/expo": "^0.63.3",
+    "@privy-io/expo": "^0.63.7",
     "@privy-io/expo-native-extensions": "^0.0.7",
     "@react-native-async-storage/async-storage": "^2.2.0",
     "@solana/web3.js": "^1.95.0",

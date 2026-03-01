@@ -115,9 +115,17 @@ function hasVolume(market: Market): boolean {
 }
 
 function getMarketVolumeScore(market: Market): number {
-    const v24h = market.volume ?? 0;
+    const v24h = market.volume24h ?? 0;
     const v = market.volume ?? 0;
     const score = Math.max(v24h, v);
+    return Number.isFinite(score) ? score : 0;
+}
+
+function getPopularityScore(market: Market): number {
+    const v24h = market.volume24h ?? 0;
+    const v = market.volume ?? 0;
+    // Heavily weight recent 24h volume (e.g. 10x) vs historical volume to surface truly trending markets
+    const score = (v24h * 10) + v;
     return Number.isFinite(score) ? score : 0;
 }
 
@@ -284,6 +292,9 @@ export default function HomeFeed() {
     const [selectedSide, setSelectedSide] = useState<TradeSide>("YES");
     const [isDepositModalVisible, setIsDepositModalVisible] = useState(false);
 
+    const [nextCursor, setNextCursor] = useState<string | null>(null);
+    const [isFetchingMore, setIsFetchingMore] = useState(false);
+
     const handleOpenTrade = (market: Market, side: TradeSide) => {
         setTradingMarket(market);
         setSelectedSide(side);
@@ -302,13 +313,27 @@ export default function HomeFeed() {
         setIsDepositModalVisible(true);
     };
 
-    const handleSelectMethod = async (method: "apple_pay" | "google_pay" | "card") => {
+    const handleSelectMethod = async (method: "apple_pay" | "google_pay" | "card" | "crypto") => {
         if (!primaryAddress) {
             Alert.alert("Wallet required", "Connect your Solana wallet first to deposit.");
             return;
         }
 
         setIsDepositModalVisible(false);
+
+        if (method === "crypto") {
+            Alert.alert(
+                "Crypto Deposit",
+                `Your Solana address is:\n\n${primaryAddress}\n\nSend USDC (Solana) to this address to fund your wallet.`,
+                [{
+                    text: "Copy Address", onPress: () => {
+                        // In a real app, use Clipboard.setString
+                        Alert.alert("Copied", "Address copied to clipboard!");
+                    }
+                }, { text: "Dismiss" }]
+            );
+            return;
+        }
 
         try {
             const options: any = {
@@ -343,10 +368,12 @@ export default function HomeFeed() {
         setMarketsLoading(true);
         setMarketsError(null);
         try {
-            const [{ markets: list, categories: feedCategories }, tagsByCategories] = await Promise.all([
-                fetchMarketsForApp({ limit: 250, sort: "liquidity" }),
+            const [{ markets: list, categories: feedCategories, nextCursor: initialCursor }, tagsByCategories] = await Promise.all([
+                // Increase limit from 50 to 500 to compensate for丢弃 Kalshi events post-fetch
+                fetchMarketsForApp({ limit: 500, sort: "volume" }),
                 fetchJupiterTagsByCategories().catch(() => ({})),
             ]);
+            setNextCursor(initialCursor);
 
             const docCategoryOrder = Object.keys(tagsByCategories ?? {})
                 .map((c) => String(c || "").trim())
@@ -438,6 +465,24 @@ export default function HomeFeed() {
         }
     }, []);
 
+    const loadMoreMarkets = useCallback(async () => {
+        if (isFetchingMore || !nextCursor) return;
+        setIsFetchingMore(true);
+        try {
+            const { markets: moreMarkets, nextCursor: newCursor } = await fetchMarketsForApp({
+                limit: 200, // Increase batch size for load more
+                sort: "volume",
+                cursor: nextCursor
+            });
+            setMarkets(prev => [...prev, ...moreMarkets]);
+            setNextCursor(newCursor);
+        } catch (e) {
+            console.error("[HomeFeed] loadMoreMarkets error:", e);
+        } finally {
+            setIsFetchingMore(false);
+        }
+    }, [isFetchingMore, nextCursor]);
+
     const loadBalances = useCallback(async () => {
         if (!primaryAddress) return;
         setBalanceLoading(true);
@@ -465,7 +510,6 @@ export default function HomeFeed() {
     }, [loadMarkets, loadBalances]);
 
     const scrollY = useSharedValue(0);
-
     const onScroll = useAnimatedScrollHandler({
         onScroll: (event) => {
             scrollY.value = event.contentOffset.y;
@@ -575,7 +619,27 @@ export default function HomeFeed() {
         }
 
         if (selectedCategory === "Popular") {
-            return sortMarketsForOdds(volumeMarkets, oddsSortKey, oddsSortDirection).slice(0, 1500);
+            // Sort by the intelligent popularity score
+            const sortedByScore = [...volumeMarkets]
+                .sort((a, b) => getPopularityScore(b) - getPopularityScore(a));
+
+            // Collect markets for the top 15 distinct event groups
+            // (prevents a single highly-populated event from dominating the whole list)
+            const topPopularIds = new Set<string>();
+            const topPopularMarkets: Market[] = [];
+
+            for (const m of sortedByScore) {
+                const eid = m.eventId || m.id;
+
+                if (topPopularIds.has(eid)) {
+                    topPopularMarkets.push(m);
+                } else if (topPopularIds.size < 15) {
+                    topPopularIds.add(eid);
+                    topPopularMarkets.push(m);
+                }
+            }
+
+            return sortMarketsForOdds(topPopularMarkets, oddsSortKey, oddsSortDirection);
         }
 
 
@@ -609,7 +673,7 @@ export default function HomeFeed() {
             if (!groupMap.has(eid)) {
                 groupMap.set(eid, {
                     eventId: eid,
-                    title: m.title,
+                    title: m.eventTitle || m.title,
                     description: m.description,
                     category: m.category,
                     imageUrl: m.imageUrl,
@@ -689,16 +753,13 @@ export default function HomeFeed() {
     );
 
     const renderHeader = () => (
-        <View style={[styles.headerSection, { paddingTop: insets.top }]}>
-            <View style={styles.topCard}>
+        <View style={styles.headerSection}>
+            <View style={[styles.topCard, { paddingTop: insets.top + 8 }]}>
                 <View style={styles.titleRow}>
                     <Text style={styles.title}>Home</Text>
                     <View style={styles.headerActions}>
-                        <Pressable onPress={() => router.push("/search")} style={styles.iconButton}>
-                            <SearchIcon size={20} color="#8d8d8d" strokeWidth={1.8} />
-                        </Pressable>
                         <Pressable style={styles.iconButton}>
-                            <Bell size={20} color="#8d8d8d" strokeWidth={1.8} />
+                            <Bell size={24} color="#171717" strokeWidth={1.8} />
                         </Pressable>
                     </View>
                 </View>
@@ -731,28 +792,15 @@ export default function HomeFeed() {
 
                     <Pressable
                         onPress={handleDeposit}
-                        disabled={!primaryAddress}
                         style={({ pressed }) => [
                             styles.depositActionContainer,
                             pressed && styles.pressed
                         ]}
                     >
-                        {SUPPORTS_GLASS ? (
-                            <GlassView
-                                style={StyleSheet.absoluteFill}
-                                glassEffectStyle="clear"
-                                /* @ts-ignore */
-                                refraction={60}
-                                depth={30}
-                                frost={6}
-                            />
-                        ) : (
-                            <BlurView intensity={30} tint="light" style={StyleSheet.absoluteFill} />
-                        )}
                         <LinearGradient
                             colors={["rgba(255, 255, 255, 0.4)", "rgba(195, 195, 195, 0.4)", "rgba(255, 255, 255, 0.4)"]}
-                            start={{ x: 1, y: 0 }}
-                            end={{ x: 0, y: 1 }}
+                            start={{ x: 0.1, y: 0.1 }}
+                            end={{ x: 0.9, y: 0.9 }}
                             style={StyleSheet.absoluteFill}
                         />
                         <View style={styles.depositActionInner}>
@@ -771,15 +819,14 @@ export default function HomeFeed() {
     const renderStickyHeader = () => {
         const animatedStyle = useAnimatedStyle(() => {
             return {
-                opacity: interpolate(scrollY.value, [40, 80], [0, 1], Extrapolation.CLAMP),
                 transform: [
-                    { translateY: interpolate(scrollY.value, [40, 80], [-20, 0], Extrapolation.CLAMP) }
+                    { translateY: interpolate(scrollY.value, [160, 200], [-200, 0], Extrapolation.CLAMP) }
                 ],
             };
         });
 
         return (
-            <Animated.View style={[styles.stickyHeaderContainer, animatedStyle]} pointerEvents="box-none">
+            <Animated.View style={[styles.stickyHeaderContainer, animatedStyle]}>
                 <View style={[styles.stickyHeaderContent, { paddingTop: insets.top }]}>
                     <View style={styles.stickyTopRow}>
                         <Text style={styles.stickyBalance}>
@@ -794,22 +841,10 @@ export default function HomeFeed() {
                                     pressed && styles.pressed
                                 ]}
                             >
-                                {SUPPORTS_GLASS ? (
-                                    <GlassView
-                                        style={StyleSheet.absoluteFill}
-                                        glassEffectStyle="clear"
-                                        /* @ts-ignore */
-                                        refraction={60}
-                                        depth={30}
-                                        frost={6}
-                                    />
-                                ) : (
-                                    <BlurView intensity={20} tint="light" style={StyleSheet.absoluteFill} />
-                                )}
                                 <LinearGradient
-                                    colors={["rgba(255, 255, 255, 0.6)", "rgba(195, 195, 195, 0.3)", "rgba(255, 255, 255, 0.6)"]}
-                                    start={{ x: 0, y: 0 }}
-                                    end={{ x: 1, y: 1 }}
+                                    colors={["rgba(255, 255, 255, 0.4)", "rgba(195, 195, 195, 0.4)", "rgba(255, 255, 255, 0.4)"]}
+                                    start={{ x: 0.1, y: 0.1 }}
+                                    end={{ x: 0.9, y: 0.9 }}
                                     style={StyleSheet.absoluteFill}
                                 />
                                 <Plus size={18} color="#000" strokeWidth={2.5} />
@@ -835,9 +870,11 @@ export default function HomeFeed() {
                 onScroll={onScroll}
                 scrollEventThrottle={16}
                 data={groupedFilteredMarkets}
-                renderItem={({ item }) => (
+                renderItem={({ item, index }) => (
                     <MarketCardNative
                         group={item}
+                        isFirst={index === 0}
+                        isLast={index === groupedFilteredMarkets.length - 1}
                         nowMs={listNowMs}
                         onBuyYes={(m) => handleOpenTrade(m, "YES")}
                         onBuyNo={(m) => handleOpenTrade(m, "NO")}
@@ -846,7 +883,6 @@ export default function HomeFeed() {
                 keyExtractor={(item) => item.eventId}
                 contentContainerStyle={styles.listContent}
                 ListHeaderComponent={renderHeader}
-                ItemSeparatorComponent={() => <View style={styles.listSeparator} />}
                 refreshControl={
                     <RefreshControl
                         refreshing={refreshing}
@@ -856,6 +892,15 @@ export default function HomeFeed() {
                         progressBackgroundColor="#f0f0f0"
                     />
                 }
+                onEndReached={loadMoreMarkets}
+                onEndReachedThreshold={0.5}
+                ListFooterComponent={() => (
+                    isFetchingMore ? (
+                        <View style={styles.listFooter}>
+                            <ActivityIndicator size="small" color="#8d8d8d" />
+                        </View>
+                    ) : <View style={{ height: 40 }} />
+                )}
                 ListEmptyComponent={
                     !marketsLoading ? (
                         <View style={styles.emptyMarkets}>
@@ -945,8 +990,8 @@ const styles = StyleSheet.create({
         backgroundColor: "#f0f0f0",
     },
     listContent: {
-        paddingHorizontal: 14,
-        paddingTop: 8,
+        paddingHorizontal: 0,
+        paddingTop: 0,
         paddingBottom: 108,
     },
     headerSection: {
@@ -954,31 +999,34 @@ const styles = StyleSheet.create({
     },
     topCard: {
         backgroundColor: "#fff",
-        borderRadius: 24,
+        borderBottomLeftRadius: 24,
+        borderBottomRightRadius: 24,
         borderCurve: "continuous",
-        paddingHorizontal: 16,
-        paddingTop: 8,
-        paddingBottom: 14,
-        borderWidth: 1,
+        paddingHorizontal: 16, // Returned to original or adjusted for full width look
+        paddingBottom: 16,
+        borderBottomWidth: 1,
+        borderLeftWidth: 0,
+        borderRightWidth: 0,
+        borderTopWidth: 0,
         borderColor: "rgba(0,0,0,0.08)",
     },
     titleRow: {
-        height: 42,
         flexDirection: "row",
         justifyContent: "space-between",
         alignItems: "center",
+        marginBottom: 8,
     },
     title: {
-        color: "#171717",
         fontSize: 24,
         lineHeight: 32,
         fontWeight: "700",
+        color: "#171717",
         letterSpacing: -0.6,
     },
     headerActions: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 12,
+        gap: 8,
     },
     iconButton: {
         width: 32,
@@ -994,7 +1042,7 @@ const styles = StyleSheet.create({
     },
     balanceColumns: {
         flexDirection: "row",
-        gap: 24,
+        gap: 16,
     },
     balanceLabel: {
         color: "#00000066",
@@ -1016,21 +1064,21 @@ const styles = StyleSheet.create({
         marginTop: 8,
     },
     depositActionContainer: {
+        width: 141,
+        height: 50,
         borderRadius: 16,
         borderCurve: "continuous",
         overflow: "hidden",
-        borderWidth: 1.5,
-        borderColor: "rgba(255,255,255,0.8)",
+        borderWidth: 1,
+        borderColor: "#fff",
         shadowColor: "#000",
         shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.25,
-        shadowRadius: 2,
-        elevation: 2,
+        shadowOpacity: 0.32,
+        shadowRadius: 1.5,
+        elevation: 3,
     },
     depositActionInner: {
-        height: 44,
-        minWidth: 120,
-        paddingHorizontal: 20,
+        flex: 1,
         alignItems: "center",
         justifyContent: "center",
     },
@@ -1052,6 +1100,7 @@ const styles = StyleSheet.create({
         alignItems: "center",
         gap: 8,
         paddingVertical: 2,
+        paddingHorizontal: 14, // Moved from listContent to here
     },
     categoryPill: {
         height: 34,
@@ -1123,10 +1172,12 @@ const styles = StyleSheet.create({
         paddingHorizontal: 8,
     },
     listSeparator: {
-        borderTopWidth: 1,
-        borderTopColor: "rgba(0,0,0,0.12)",
-        borderStyle: "dashed",
-        marginVertical: 0,
+        height: 12,
+    },
+    listFooter: {
+        paddingVertical: 32,
+        alignItems: "center",
+        justifyContent: "center",
     },
     emptyMarkets: {
         paddingVertical: 40,

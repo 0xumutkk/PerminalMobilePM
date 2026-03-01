@@ -34,12 +34,17 @@ export interface JupiterMarketPricing {
     buyNoPriceUsd: number | null;
     sellYesPriceUsd: number | null;
     sellNoPriceUsd: number | null;
+    volume?: number | string;
+    volume24h?: number | string;
+    openInterest?: number | string;
+    liquidityDollars?: number | string;
+    notionalValueDollars?: number | string;
 }
 
 export interface JupiterMarket {
     marketId: string;
     isYes?: boolean;
-    pricing: JupiterMarketPricing & { volume?: number };
+    pricing: JupiterMarketPricing;
     status: "open" | "paused" | "closed";
     result: "" | "pending" | "yes" | "no" | null;
     fee?: number;
@@ -64,8 +69,10 @@ export interface JupiterEvent {
     liquidity?: number;
     provider?: "polymarket" | "kalshi";
     metadata?: {
-
+        eventId?: string;
         title: string;
+        subtitle?: string;
+        isLive?: boolean;
         slug?: string;
         imageUrl?: string;
         description?: string;
@@ -80,6 +87,12 @@ export interface JupiterEvent {
 
 export interface JupiterEventsResponse {
     data: JupiterEvent[];
+    pagination?: {
+        start?: number;
+        end?: number;
+        total?: number;
+        hasNext?: boolean;
+    };
     nextCursor?: string | null;
 }
 
