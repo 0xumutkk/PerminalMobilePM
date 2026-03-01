@@ -6,6 +6,8 @@ import { formatTimeAgo } from "../../lib/utils";
 import { ArrowUp, ArrowDown, Repeat2, Share2, ShieldCheck } from "lucide-react-native";
 import { useInteractions } from "../../hooks/useInteractions";
 import { CircularGauge } from "./CircularGauge";
+import { fetchJupiterMarket } from "../../lib/jupiter";
+import { microUsdToProbability } from "../../lib/types/jupiter.types";
 
 interface PostCardProps {
     post: FeedPost;
@@ -41,6 +43,25 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
             setRepostsCount(prev => !newReposted ? prev + 1 : Math.max(0, prev - 1));
         }
     };
+
+    // Live market data for gauge
+    const [liveProbability, setLiveProbability] = useState<number>(50);
+    React.useEffect(() => {
+        if (!post.market_id) return;
+        let cancelled = false;
+        fetchJupiterMarket(post.market_id).then(m => {
+            if (cancelled || !m) return;
+            const buyYes = m.pricing?.buyYesPriceUsd;
+            const sellYes = m.pricing?.sellYesPriceUsd;
+            if (buyYes != null && sellYes != null) {
+                const prob = (microUsdToProbability(buyYes) + microUsdToProbability(sellYes)) / 2;
+                setLiveProbability(Math.round(prob * 100));
+            } else if (buyYes != null) {
+                setLiveProbability(Math.round(microUsdToProbability(buyYes) * 100));
+            }
+        });
+        return () => { cancelled = true; };
+    }, [post.market_id]);
 
     const formatCount = (count: number) => {
         if (count >= 1000) return `${(count / 1000).toFixed(1)}K`;
@@ -137,7 +158,7 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
                             <Text style={styles.marketQuestion} numberOfLines={2}>
                                 {post.market_question || "Market question loading..."}
                             </Text>
-                            <CircularGauge percentage={51} size={32} />
+                            <CircularGauge percentage={liveProbability} size={32} />
                         </View>
 
                         {/* Middle Row (Metric Pill + Details) - Only for Position/Sold */}

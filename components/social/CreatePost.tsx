@@ -59,15 +59,23 @@ export function CreatePost({ onPostCreated, marketId }: CreatePostProps) {
         executeSupabasePost({}, false);
     };
 
-    const handleTradeSuccess = async (signature: string) => {
+    const handleTradeSuccess = async (details: {
+        signature: string;
+        outcome: string;
+        amount: number;
+        price: number;
+    }) => {
         setShowTradePanel(false);
 
-        // Execute the real post to Supabase
+        // Execute the real post to Supabase with rich metadata
         const tradeMetadata = {
-            signature,
+            signature: details.signature,
             marketId: currentMarket?.id,
             marketTitle: currentMarket?.title,
-            // Additional parsed details could go here
+            outcome: details.outcome,
+            shares_count: details.amount, // depending on mode this might be shares or usdc
+            avg_entry: details.price,
+            current_price: details.price,
         };
         await executeSupabasePost(tradeMetadata, true);
     };

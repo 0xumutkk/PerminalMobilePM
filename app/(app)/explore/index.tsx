@@ -1,8 +1,10 @@
 import React, { useState, useCallback } from "react";
 import { StyleSheet, View, Text, TouchableOpacity } from "react-native";
+import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Feed } from "../../../components/social/Feed";
 import { CreatePost } from "../../../components/social/CreatePost";
+import { migrateFigmaPosts } from "../../../lib/migrate";
 import { Image } from "expo-image";
 import { Plus, Grid } from "lucide-react-native";
 
@@ -14,6 +16,19 @@ export default function ExploreScreen() {
   const handlePostCreated = useCallback(() => {
     setRefreshKey(prev => prev + 1);
     setShowCreatePost(false);
+  }, []);
+
+  const router = useRouter();
+  const handleTradePress = useCallback((marketId: string) => {
+    router.push({
+      pathname: "/(app)/market/[id]",
+      params: { id: marketId }
+    });
+  }, [router]);
+
+  React.useEffect(() => {
+    // Temporary migration trigger
+    migrateFigmaPosts().then(res => console.log("Migration result:", res));
   }, []);
 
   const ListHeaderComponent = () => (
@@ -37,7 +52,7 @@ export default function ExploreScreen() {
         </View>
         <Text style={styles.feedTitle}>Feed</Text>
         <TouchableOpacity style={styles.gridButton}>
-          <Grid size={18} color="#000" strokeWidth={2.5} />
+          <Grid size={18} color="#fff" strokeWidth={2.5} />
         </TouchableOpacity>
       </View>
 
@@ -61,6 +76,7 @@ export default function ExploreScreen() {
       <Feed
         key={`${tab}-${refreshKey}`}
         ListHeaderComponent={ListHeaderComponent}
+        onTradePress={handleTradePress}
       />
 
       {/* Floating Action Button */}
@@ -77,7 +93,7 @@ export default function ExploreScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#000",
+    backgroundColor: "#fff",
   },
   topBar: {
     flexDirection: "row",
@@ -85,17 +101,17 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     paddingHorizontal: 16,
     paddingVertical: 10,
-    backgroundColor: "#000",
+    backgroundColor: "#fff",
   },
   headerLeft: {
     width: 36,
     height: 36,
-    backgroundColor: "rgba(255,255,255,0.1)",
+    backgroundColor: "rgba(0,0,0,0.05)",
     borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.1)",
+    borderColor: "rgba(0,0,0,0.05)",
   },
   logo: {
     width: 24,
@@ -103,7 +119,7 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   feedTitle: {
-    color: "#fff",
+    color: "#000",
     fontSize: 18,
     fontWeight: "700",
     letterSpacing: -0.4,
@@ -112,7 +128,7 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 8,
-    backgroundColor: "#fff",
+    backgroundColor: "#000",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -120,23 +136,23 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     paddingHorizontal: 16,
     gap: 24,
-    backgroundColor: "#000",
+    backgroundColor: "#fff",
   },
   tabButton: {
     paddingVertical: 14,
   },
   tabActive: {
     borderBottomWidth: 3,
-    borderBottomColor: "#fff",
+    borderBottomColor: "#000",
   },
   tabText: {
-    color: "rgba(255,255,255,0.4)",
+    color: "rgba(0,0,0,0.4)",
     fontSize: 16,
     fontWeight: "700",
     letterSpacing: -0.4,
   },
   tabTextActive: {
-    color: "#fff",
+    color: "#000",
   },
   fab: {
     position: "absolute",
@@ -150,7 +166,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.2,
     shadowRadius: 10,
     elevation: 10,
   },

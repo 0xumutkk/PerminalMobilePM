@@ -397,7 +397,8 @@ function MarketDetailScreen() {
         setShowTradePanel(true);
     };
 
-    const handleTradeSuccess = (signature: string) => {
+    const handleTradeSuccess = (details: { signature: string }) => {
+        const { signature } = details;
         Alert.alert("Success", `Trade successful! Signature: ${signature.slice(0, 8)}...`);
         setShowTradePanel(false);
     };

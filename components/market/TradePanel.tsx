@@ -10,7 +10,13 @@ import { getTokenBalance } from "../../lib/solana";
 
 interface TradePanelProps {
     market: Market;
-    onSuccess?: (signature: string) => void;
+    onSuccess?: (details: {
+        signature: string;
+        outcome: TradeSide;
+        amount: number;
+        price: number;
+        mode: TradeMode;
+    }) => void;
     initialSide?: TradeSide;
     initialTradeMode?: TradeMode;
 }
@@ -182,7 +188,13 @@ export function TradePanel({
                 });
 
         if (signature && onSuccess) {
-            onSuccess(signature);
+            onSuccess({
+                signature,
+                outcome: side,
+                amount: numAmount,
+                price: executionPrice,
+                mode: tradeMode
+            });
         }
         if (signature) {
             await refreshSideBalance();

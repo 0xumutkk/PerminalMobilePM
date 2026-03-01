@@ -11,7 +11,7 @@ import { fetchMarketForApp } from "../../lib/jupiter";
 interface FeedProps {
     userId?: string;
     marketId?: string;
-    ListHeaderComponent?: React.ComponentType<any> | React.ReactElement | null;
+    ListHeaderComponent?: React.ComponentType | React.ReactElement | null;
     onTradePress?: (marketId: string) => void;
 }
 
@@ -59,8 +59,8 @@ export function Feed({ userId, marketId, ListHeaderComponent: CustomListHeaderCo
     };
 
     const renderItem = React.useCallback(({ item }: { item: typeof posts[0] }) => (
-        <PostCard post={item} onTradePress={handleTradePress} />
-    ), []);
+        <PostCard post={item} onTradePress={onTradePress || handleTradePress} />
+    ), [onTradePress]);
 
     const ListEmptyComponent = React.useCallback(() => {
         if (isLoading) {
