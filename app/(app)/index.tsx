@@ -49,6 +49,9 @@ import Animated, {
 import { LinearGradient } from "expo-linear-gradient";
 import { BlurView } from "expo-blur";
 import { GlassView, isLiquidGlassAvailable } from "expo-glass-effect";
+import { FlashList } from "@shopify/flash-list";
+
+const AnimatedFlashList = Animated.createAnimatedComponent(FlashList);
 
 const SUPPORTS_GLASS = Platform.OS === "ios" && isLiquidGlassAvailable();
 const CATEGORY_PRIORITY = [
@@ -866,11 +869,11 @@ export default function HomeFeed() {
         <View style={styles.container}>
             <StatusBar style="dark" />
             {renderStickyHeader()}
-            <Animated.FlatList
+            <AnimatedFlashList
                 onScroll={onScroll}
                 scrollEventThrottle={16}
                 data={groupedFilteredMarkets}
-                renderItem={({ item, index }) => (
+                renderItem={({ item, index }: any) => (
                     <MarketCardNative
                         group={item}
                         isFirst={index === 0}
@@ -880,7 +883,9 @@ export default function HomeFeed() {
                         onBuyNo={(m) => handleOpenTrade(m, "NO")}
                     />
                 )}
-                keyExtractor={(item) => item.eventId}
+                keyExtractor={(item: any) => item.eventId}
+                // @ts-expect-error FlashList types missing estimatedItemSize in this RN version
+                estimatedItemSize={250}
                 contentContainerStyle={styles.listContent}
                 ListHeaderComponent={renderHeader}
                 refreshControl={

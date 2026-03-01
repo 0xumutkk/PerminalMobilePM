@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { Connection, PublicKey } from "npm:@solana/web3.js";
 import { createClient } from "npm:@supabase/supabase-js";

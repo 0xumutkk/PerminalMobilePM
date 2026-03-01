@@ -16,5 +16,9 @@
     "App.tsx",
     "**/*.ts",
     "**/*.tsx"
+  ],
+  "exclude": [
+    "supabase",
+    "node_modules"
   ]
 }

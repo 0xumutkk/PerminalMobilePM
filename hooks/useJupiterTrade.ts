@@ -1,17 +1,14 @@
 import { useState } from 'react';
-import { usePrivy, useSolanaWallets } from '@privy-io/expo';
+import { usePrivy, useEmbeddedSolanaWallet } from '@privy-io/expo';
 import { jupiterTradeService } from '../lib/services/jupiterTrade';
 import { Connection, Transaction, VersionedTransaction } from '@solana/web3.js';
 import { Buffer } from 'buffer';
 
 export function useJupiterTrade() {
     const { user } = usePrivy();
-    const { wallets } = useSolanaWallets();
+    const solanaWallet = useEmbeddedSolanaWallet();
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
-
-    // Get the user's embedded wallet.
-    const embeddedWallet = wallets.find((w) => w.walletClientType === 'privy');
 
     const executeTrade = async (params: {
         marketId: string;
@@ -25,11 +22,12 @@ export function useJupiterTrade() {
         setError(null);
 
         try {
-            if (!embeddedWallet) {
-                throw new Error("No embedded wallet found. Please login.");
+            const activeWallet = solanaWallet.wallets?.[0];
+            if (solanaWallet.status !== 'connected' || !activeWallet) {
+                throw new Error("No connected embedded solana wallet found. Please login.");
             }
 
-            const ownerPubkey = embeddedWallet.address;
+            const ownerPubkey = activeWallet.address;
             let orderResponse;
 
             // 1. Create Order via Jupiter API
@@ -60,7 +58,7 @@ export function useJupiterTrade() {
             const transaction = VersionedTransaction.deserialize(transactionBuffer);
 
             // 3. Sign and Send with Privy Embedded Wallet
-            const provider = await embeddedWallet.getProvider();
+            const provider = await solanaWallet.getProvider();
 
             // Need a connection to broadcast
             // We use a public endpoint or your RPC from env

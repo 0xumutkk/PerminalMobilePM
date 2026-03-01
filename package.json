@@ -16,6 +16,7 @@
     "@privy-io/expo": "^0.63.7",
     "@privy-io/expo-native-extensions": "^0.0.7",
     "@react-native-async-storage/async-storage": "^2.2.0",
+    "@shopify/flash-list": "2.0.2",
     "@solana/web3.js": "^1.95.0",
     "@supabase/supabase-js": "^2.93.3",
     "babel-preset-expo": "^54.0.10",

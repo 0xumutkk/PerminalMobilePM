@@ -1,18 +1,56 @@
-import React from "react";
-import { View, FlatList, StyleSheet, RefreshControl, Text, ActivityIndicator, TouchableOpacity } from "react-native";
+import React, { useState } from "react";
+import { View, StyleSheet, RefreshControl, Text, ActivityIndicator, TouchableOpacity, Modal } from "react-native";
+import { FlashList } from "@shopify/flash-list";
 import { useFeed } from "../../hooks/useFeed";
 import { PostCard } from "./PostCard";
 import { CreatePost } from "./CreatePost";
+import { TradePanel } from "../market/TradePanel";
+import { Market } from "../../lib/mock-data";
+import { fetchMarketForApp } from "../../lib/jupiter";
 
 interface FeedProps {
     userId?: string;
     marketId?: string;
     ListHeaderComponent?: React.ComponentType<any> | React.ReactElement | null;
+    onTradePress?: (marketId: string) => void;
 }
 
-export function Feed({ userId, marketId, ListHeaderComponent: CustomListHeaderComponent }: FeedProps) {
+export function Feed({ userId, marketId, ListHeaderComponent: CustomListHeaderComponent, onTradePress }: FeedProps) {
     const { posts, isLoading, error, fetchFeed } = useFeed(userId, marketId);
-    const [refreshing, setRefreshing] = React.useState(false);
+    const [refreshing, setRefreshing] = useState(false);
+
+    // Trade Panel State
+    const [tradingMarketId, setTradingMarketId] = useState<string | null>(null);
+    const [tradingMarket, setTradingMarket] = useState<Market | null>(null);
+    const [isFetchingMarket, setIsFetchingMarket] = useState(false);
+
+    const handleTradePress = async (id: string) => {
+        if (onTradePress) {
+            onTradePress(id);
+            return;
+        }
+
+        setTradingMarketId(id);
+        setIsFetchingMarket(true);
+        try {
+            const market = await fetchMarketForApp(id);
+            if (market) {
+                setTradingMarket(market);
+            } else {
+                setTradingMarketId(null);
+            }
+        } catch (e) {
+            console.error("Failed to fetch market details for trade", e);
+            setTradingMarketId(null);
+        } finally {
+            setIsFetchingMarket(false);
+        }
+    };
+
+    const handleCloseTrade = () => {
+        setTradingMarketId(null);
+        setTradingMarket(null);
+    };
 
     const onRefresh = async () => {
         setRefreshing(true);
@@ -21,7 +59,7 @@ export function Feed({ userId, marketId, ListHeaderComponent: CustomListHeaderCo
     };
 
     const renderItem = React.useCallback(({ item }: { item: typeof posts[0] }) => (
-        <PostCard post={item} />
+        <PostCard post={item} onTradePress={handleTradePress} />
     ), []);
 
     const ListEmptyComponent = React.useCallback(() => {
@@ -57,17 +95,54 @@ export function Feed({ userId, marketId, ListHeaderComponent: CustomListHeaderCo
     ), [fetchFeed]);
 
     return (
-        <FlatList
-            data={posts}
-            renderItem={renderItem}
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={styles.listContent}
-            refreshControl={
-                <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#34d399" />
-            }
-            ListHeaderComponent={CustomListHeaderComponent || (!userId ? ListHeaderComponent : undefined)}
-            ListEmptyComponent={ListEmptyComponent}
-        />
+        <View style={styles.container}>
+            {/* @ts-ignore */}
+            <FlashList
+                data={posts}
+                renderItem={renderItem}
+                keyExtractor={(item: any) => item.id}
+                // @ts-expect-error FlashList types missing estimatedItemSize in this RN version
+                estimatedItemSize={250}
+                contentContainerStyle={styles.listContent}
+                refreshControl={
+                    <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#34d399" />
+                }
+                ListHeaderComponent={CustomListHeaderComponent || (!userId ? ListHeaderComponent : undefined)}
+                ListEmptyComponent={ListEmptyComponent}
+            />
+
+            {/* Loading Modal Overaly for fetching Market data */}
+            {isFetchingMarket && (
+                <View style={styles.fetchingOverlay}>
+                    <ActivityIndicator size="large" color="#34d399" />
+                </View>
+            )}
+
+            {/* Trade Panel Modal */}
+            <Modal
+                visible={!!tradingMarket}
+                animationType="slide"
+                transparent={true}
+                onRequestClose={handleCloseTrade}
+            >
+                <View style={styles.modalOverlay}>
+                    <TouchableOpacity
+                        style={StyleSheet.absoluteFillObject}
+                        onPress={handleCloseTrade}
+                    />
+                    <View style={styles.modalContent}>
+                        {tradingMarket && (
+                            <TradePanel
+                                market={tradingMarket}
+                                onSuccess={handleCloseTrade}
+                                initialSide="YES"
+                                initialTradeMode="BUY"
+                            />
+                        )}
+                    </View>
+                </View>
+            </Modal>
+        </View>
     );
 }
 
@@ -100,5 +175,23 @@ const styles = StyleSheet.create({
         color: "#6b7280",
         fontSize: 14,
         marginTop: 4,
+    },
+    container: {
+        flex: 1,
+    },
+    fetchingOverlay: {
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: "rgba(0,0,0,0.5)",
+        justifyContent: "center",
+        alignItems: "center",
+        zIndex: 10,
+    },
+    modalOverlay: {
+        flex: 1,
+        backgroundColor: "rgba(0,0,0,0.5)",
+        justifyContent: "flex-end",
+    },
+    modalContent: {
+        width: "100%",
     },
 });

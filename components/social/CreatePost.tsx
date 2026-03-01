@@ -1,37 +1,86 @@
-import React, { useState } from "react";
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator } from "react-native";
+import React, { useState, useEffect } from "react";
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, Modal } from "react-native";
 import { Image } from "expo-image";
 import { useProfile } from "../../hooks/useProfile";
 import { useInteractions } from "../../hooks/useInteractions";
+import { fetchMarketForApp } from "../../lib/jupiter";
+import { Market } from "../../lib/mock-data";
+import { TradePanel } from "../market/TradePanel";
+import { TradeSide, TradeMode } from "../../hooks/useTrade";
 
-export function CreatePost({ onPostCreated }: { onPostCreated: () => void }) {
+interface CreatePostProps {
+    onPostCreated: () => void;
+    marketId?: string;
+}
+
+export function CreatePost({ onPostCreated, marketId }: CreatePostProps) {
     const { profile } = useProfile();
     const { createPost, isSubmitting } = useInteractions();
     const [content, setContent] = useState("");
     const [postType, setPostType] = useState<'standard' | 'trade' | 'thesis'>('standard');
 
-    const handlePost = async () => {
+    // Market resolving state
+    const [currentMarket, setCurrentMarket] = useState<Market | null>(null);
+    const [isFetchingMarket, setIsFetchingMarket] = useState(false);
+
+    // Trade modal state
+    const [showTradePanel, setShowTradePanel] = useState(false);
+
+    useEffect(() => {
+        if (!marketId) {
+            setCurrentMarket(null);
+            if (postType !== 'standard') setPostType('standard');
+            return;
+        }
+        let cancelled = false;
+        setIsFetchingMarket(true);
+        fetchMarketForApp(marketId)
+            .then((m) => {
+                if (!cancelled && m) setCurrentMarket(m);
+            })
+            .catch((e) => console.error("CreatePost failed to fetch market:", e))
+            .finally(() => {
+                if (!cancelled) setIsFetchingMarket(false);
+            });
+        return () => { cancelled = true; };
+    }, [marketId]);
+
+    const handlePostBtn = () => {
         if (!content.trim()) return;
 
-        let tradeMetadata = {};
-        if (postType === 'trade') {
-            tradeMetadata = {
-                avg_entry: 0.47,
-                current_price: 0.97,
-                shares_count: '12.3K',
-                total_value: '12,234.56',
-                pnl_percent: 1234.2
-            };
+        if (postType === 'trade' || postType === 'thesis') {
+            if (!currentMarket) return;
+            // Open Trade Panel to finalize the actual blockchain transaction
+            setShowTradePanel(true);
+            return;
         }
 
+        // Standard post
+        executeSupabasePost({}, false);
+    };
+
+    const handleTradeSuccess = async (signature: string) => {
+        setShowTradePanel(false);
+
+        // Execute the real post to Supabase
+        const tradeMetadata = {
+            signature,
+            marketId: currentMarket?.id,
+            marketTitle: currentMarket?.title,
+            // Additional parsed details could go here
+        };
+        await executeSupabasePost(tradeMetadata, true);
+    };
+
+    const executeSupabasePost = async (tradeMetadata: any = {}, isVerified: boolean = false) => {
         const result = await createPost(
             content,
+            currentMarket?.id,
             undefined,
-            undefined,
-            undefined,
+            currentMarket?.title,
             postType,
             tradeMetadata,
-            postType === 'trade'
+            isVerified // true if it went through the TradePanel
         );
 
         if (result) {
@@ -72,30 +121,62 @@ export function CreatePost({ onPostCreated }: { onPostCreated: () => void }) {
                     >
                         <Text style={[styles.typeButtonText, postType === 'standard' && styles.typeButtonTextActive]}>Standard</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity
-                        style={[styles.typeButton, postType === 'trade' && styles.typeButtonActive]}
-                        onPress={() => setPostType('trade')}
-                    >
-                        <Text style={[styles.typeButtonText, postType === 'trade' && styles.typeButtonTextActive]}>Position</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                        style={[styles.typeButton, postType === 'thesis' && styles.typeButtonActive]}
-                        onPress={() => setPostType('thesis')}
-                    >
-                        <Text style={[styles.typeButtonText, postType === 'thesis' && styles.typeButtonTextActive]}>Thesis</Text>
-                    </TouchableOpacity>
+                    {currentMarket && !isFetchingMarket && (
+                        <>
+                            <TouchableOpacity
+                                style={[styles.typeButton, postType === 'trade' && styles.typeButtonActive]}
+                                onPress={() => setPostType('trade')}
+                            >
+                                <Text style={[styles.typeButtonText, postType === 'trade' && styles.typeButtonTextActive]}>Position</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                style={[styles.typeButton, postType === 'thesis' && styles.typeButtonActive]}
+                                onPress={() => setPostType('thesis')}
+                            >
+                                <Text style={[styles.typeButtonText, postType === 'thesis' && styles.typeButtonTextActive]}>Thesis</Text>
+                            </TouchableOpacity>
+                        </>
+                    )}
+                    {isFetchingMarket && (
+                        <ActivityIndicator style={{ marginLeft: 8 }} size="small" color="#34d399" />
+                    )}
                 </View>
 
                 <View style={styles.footer}>
                     <TouchableOpacity
                         style={[styles.button, (!content.trim() || isSubmitting) && styles.disabledButton]}
-                        onPress={handlePost}
+                        onPress={handlePostBtn}
                         disabled={!content.trim() || isSubmitting}
                     >
                         {isSubmitting ? <ActivityIndicator color="#000" size="small" /> : <Text style={styles.buttonText}>Post</Text>}
                     </TouchableOpacity>
                 </View>
             </View>
+
+            {/* Trade Panel Overlay for Position / Thesis */}
+            <Modal
+                visible={showTradePanel && !!currentMarket}
+                animationType="slide"
+                transparent={true}
+                onRequestClose={() => setShowTradePanel(false)}
+            >
+                <View style={styles.modalOverlay}>
+                    <TouchableOpacity
+                        style={StyleSheet.absoluteFillObject}
+                        onPress={() => setShowTradePanel(false)}
+                    />
+                    <View style={styles.modalContent}>
+                        {currentMarket && (
+                            <TradePanel
+                                market={currentMarket}
+                                onSuccess={handleTradeSuccess}
+                                initialSide="YES"
+                                initialTradeMode="BUY"
+                            />
+                        )}
+                    </View>
+                </View>
+            </Modal>
         </View>
     );
 }
@@ -183,5 +264,13 @@ const styles = StyleSheet.create({
         color: "#000",
         fontSize: 14,
         fontWeight: "700",
+    },
+    modalOverlay: {
+        flex: 1,
+        backgroundColor: "rgba(0,0,0,0.5)",
+        justifyContent: "flex-end",
+    },
+    modalContent: {
+        width: "100%",
     },
 });

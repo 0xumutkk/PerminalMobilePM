@@ -1,17 +1,18 @@
-import React, { useState } from "react";
+import React, { useState, memo } from "react";
 import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
 import { Image } from "expo-image";
 import { FeedPost } from "../../hooks/useFeed";
 import { formatTimeAgo } from "../../lib/utils";
-import { ArrowUp, ArrowDown, Repeat2, Share2 } from "lucide-react-native";
+import { ArrowUp, ArrowDown, Repeat2, Share2, ShieldCheck } from "lucide-react-native";
 import { useInteractions } from "../../hooks/useInteractions";
 import { CircularGauge } from "./CircularGauge";
 
 interface PostCardProps {
     post: FeedPost;
+    onTradePress?: (marketId: string) => void;
 }
 
-export function PostCard({ post }: PostCardProps) {
+export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardProps) {
     const { toggleLike, toggleRepost } = useInteractions();
 
     const [liked, setLiked] = useState(post.user_has_liked);
@@ -50,8 +51,25 @@ export function PostCard({ post }: PostCardProps) {
     const postType = (post as any).post_type || 'standard';
     const tradeData = (post as any).trade_metadata || {};
     const pnlPercent = tradeData?.pnl_percent || 0;
-    const isPosition = postType === 'trade';
+
+    const isPosition = postType === 'trade' || postType === 'position';
     const isThesis = postType === 'thesis';
+    const isSold = postType === 'sold';
+
+    // UI Variants based on post type
+    // Figma Colors: 
+    // Position: #0088FF (Blue)
+    // Thesis: #D9D9D9 (Grey)
+    // Sold: #FF383C (Red) - using lower opacity forSold background as per visual vibe
+    const cardBgColor = isPosition ? "#0088FF" : isSold ? "#FF383C" : "#D9D9D9";
+
+    // Header Badge Styles
+    const headerBadgeBg = isPosition ? "rgba(59, 130, 247, 0.25)" : isSold ? "rgba(237, 66, 40, 0.25)" : "rgba(0, 0, 0, 0.15)";
+    const headerBadgeText = isPosition ? "#0088FF" : isSold ? "#FF383C" : "#171717";
+
+    // Text themes
+    const footerTextColor = (isPosition || isSold) ? "#FFFFFF" : "#000000";
+    const footerSubTextColor = (isPosition || isSold) ? "rgba(255,255,255,0.5)" : "rgba(0,0,0,0.5)";
 
     return (
         <View style={styles.container}>
@@ -73,136 +91,161 @@ export function PostCard({ post }: PostCardProps) {
                     <View style={styles.nameRow}>
                         <Text style={styles.displayName}>{post.author?.display_name || post.author?.username}</Text>
                         <Text style={styles.usernameTime}>@{post.author?.username} • {timeAgo}</Text>
+
+                        {/* Type Badge */}
+                        <View style={[styles.typeBadge, { backgroundColor: headerBadgeBg }]}>
+                            <Text style={[styles.typeBadgeText, { color: headerBadgeText }]}>
+                                {isPosition ? "Position" : isSold ? "Sold" : "Thesis"}
+                            </Text>
+                        </View>
                     </View>
                 </View>
 
-                {/* Badge + PnL */}
-                {isPosition && (
-                    <View style={styles.badgeRow}>
-                        <View style={styles.positionBadge}>
-                            <Text style={styles.positionBadgeText}>Position</Text>
-                        </View>
+                {/* PnL and Verification */}
+                <View style={styles.rightHeader}>
+                    {isPosition && pnlPercent > 0 && (
                         <Text style={styles.pnlText}>+{pnlPercent.toLocaleString()}%</Text>
-                    </View>
-                )}
-                {isThesis && (
-                    <View style={styles.thesisBadge}>
-                        <Text style={styles.thesisBadgeText}>Thesis</Text>
-                    </View>
-                )}
-            </View>
-
-            {/* Post Content */}
-            <Text style={styles.postContent}>{post.content}</Text>
-
-            {/* Market Card */}
-            {post.market_slug && (
-                <View style={styles.marketCard}>
-                    {/* Market Header */}
-                    <View style={styles.marketHeader}>
-                        <View style={styles.marketImageFallback}>
-                            <Text style={styles.marketImageText}>📊</Text>
-                        </View>
-                        <Text style={styles.marketQuestion} numberOfLines={2}>
-                            {post.market_question || "Market question loading..."}
-                        </Text>
-                        <CircularGauge percentage={51} size={48} />
-                    </View>
-
-                    {/* Position Details (only for Position posts) */}
-                    {isPosition && (
-                        <View style={styles.positionDetails}>
-                            <View style={styles.yesPill}>
-                                <Text style={styles.yesPillText}>Yes</Text>
-                            </View>
-                            <Text style={styles.sharesText}>{tradeData.shares_count || '12.3K'} Shares</Text>
-                            <Text style={styles.valueText}>${tradeData.total_value || '12,234.56'}</Text>
+                    )}
+                    {post.is_verified && (
+                        <View style={styles.proofBadge}>
+                            <ShieldCheck size={12} color="#34d399" />
+                            <Text style={styles.proofBadgeText}>Proof</Text>
                         </View>
                     )}
+                </View>
+            </View>
 
-                    {/* Trade Bar */}
-                    <View style={styles.tradeBar}>
-                        <View style={styles.tradeBarLeft}>
-                            <View style={styles.tradeBarItem}>
-                                <Text style={styles.tradeBarLabel}>Avg. Entry</Text>
-                                <Text style={styles.tradeBarValue}>{tradeData.avg_entry ? `${(tradeData.avg_entry * 100).toFixed(0)}¢` : '47¢'}</Text>
+            {/* Post Content with vertical line connector */}
+            <View style={styles.contentWrapper}>
+                <View style={styles.contentLine} />
+                <Text style={styles.postContent}>{post.content}</Text>
+            </View>
+
+            {/* Market Card Container */}
+            {post.market_slug && (
+                <View style={[styles.marketCard, { backgroundColor: cardBgColor }]}>
+                    {/* Inner Content (White Rounded Box) */}
+                    <View style={styles.marketInnerCard}>
+                        {/* Market Header */}
+                        <View style={styles.marketHeader}>
+                            <View style={styles.marketImageWrapper}>
+                                <Image
+                                    source={{ uri: `https://avatar.vercel.sh/${post.market_slug}` }}
+                                    style={styles.marketImage}
+                                />
                             </View>
-                            <View style={styles.tradeBarItem}>
-                                <Text style={styles.tradeBarLabel}>Current Price</Text>
-                                <Text style={styles.tradeBarValue}>{tradeData.current_price ? `${(tradeData.current_price * 100).toFixed(0)}¢` : '97¢'}</Text>
+                            <Text style={styles.marketQuestion} numberOfLines={2}>
+                                {post.market_question || "Market question loading..."}
+                            </Text>
+                            <CircularGauge percentage={51} size={40} />
+                        </View>
+
+                        {/* Middle Row (Metric Pill + Details) - Only for Position/Sold */}
+                        {(isPosition || isSold) && (
+                            <View style={styles.positionDataRow}>
+                                <View style={[styles.outcomePill, isSold && styles.outcomePillSold]}>
+                                    <Text style={[styles.outcomePillText, isSold && styles.outcomePillTextSold]}>
+                                        {tradeData.outcome || 'Yes'}
+                                    </Text>
+                                </View>
+                                <View style={styles.metricsGroup}>
+                                    <Text style={styles.metricItemText}>{tradeData.shares_count || '12.3K'} Shares</Text>
+                                    <Text style={styles.metricItemText}>${tradeData.total_value || '12,234.56'}</Text>
+                                </View>
+                            </View>
+                        )}
+                    </View>
+
+                    {/* Market Card Footer (Metrics + Trade Button) */}
+                    <View style={styles.marketFooter}>
+                        <View style={styles.footerMetrics}>
+                            {(isPosition || isSold) && (
+                                <View style={styles.footerMetricColumn}>
+                                    <Text style={[styles.footerMetricLabel, { color: footerSubTextColor }]}>Avg. Entry</Text>
+                                    <Text style={[styles.footerMetricValue, { color: footerTextColor }]}>
+                                        {Math.round((tradeData.avg_entry || 0.47) * 100)}¢
+                                    </Text>
+                                </View>
+                            )}
+                            <View style={styles.footerMetricColumn}>
+                                <Text style={[styles.footerMetricLabel, { color: footerSubTextColor }]}>Current Price</Text>
+                                <Text style={[styles.footerMetricValue, { color: footerTextColor }]}>
+                                    {Math.round((tradeData.current_price || 0.97) * 100)}¢
+                                </Text>
                             </View>
                         </View>
-                        <TouchableOpacity style={styles.tradeButton}>
-                            <Text style={styles.tradeButtonText}>Trade</Text>
+
+                        <TouchableOpacity
+                            style={styles.tradeActionButton}
+                            onPress={() => { if (post.market_id) onTradePress?.(post.market_id); }}
+                        >
+                            <Text style={styles.tradeActionButtonText}>Trade</Text>
                         </TouchableOpacity>
                     </View>
                 </View>
             )}
 
-            {/* Avatar Stack */}
-            <View style={styles.avatarStack}>
-                <View style={[styles.miniAvatar, { backgroundColor: '#3b82f6' }]} />
-                <View style={[styles.miniAvatar, { marginLeft: -8, backgroundColor: '#8b5cf6' }]} />
-                <Text style={styles.avatarStackText}>+14</Text>
-            </View>
-
             {/* Action Bar */}
             <View style={styles.actionBar}>
-                <TouchableOpacity style={styles.actionItem} onPress={handleLike}>
-                    <ArrowUp size={18} color={liked ? "#34d399" : "#6b7280"} />
-                    <Text style={[styles.actionText, liked && styles.actionTextGreen]}>{formatCount(likesCount)}</Text>
-                </TouchableOpacity>
+                <View style={styles.actionBarLeft}>
+                    <TouchableOpacity style={styles.actionItem} onPress={handleLike}>
+                        <ArrowUp size={16} color={liked ? "#34d399" : "#171717"} />
+                        <Text style={[styles.actionItemText, liked && styles.textGreen]}>{formatCount(likesCount)}</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity style={styles.actionItem}>
+                        <ArrowDown size={16} color="#171717" />
+                        <Text style={styles.actionItemText}>2.3K</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity style={styles.actionItem} onPress={handleRepost}>
+                        <Repeat2 size={16} color={reposted ? "#34d399" : "#171717"} />
+                        <Text style={[styles.actionItemText, reposted && styles.textGreen]}>{formatCount(repostsCount)}</Text>
+                    </TouchableOpacity>
+                </View>
+
                 <TouchableOpacity style={styles.actionItem}>
-                    <ArrowDown size={18} color="#6b7280" />
-                    <Text style={styles.actionText}>2.3K</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.actionItem} onPress={handleRepost}>
-                    <Repeat2 size={18} color={reposted ? "#34d399" : "#6b7280"} />
-                    <Text style={[styles.actionText, reposted && styles.actionTextGreen]}>{formatCount(repostsCount)}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.actionItem}>
-                    <Share2 size={18} color="#6b7280" />
+                    <Share2 size={16} color="#171717" style={{ opacity: 0.5 }} />
                 </TouchableOpacity>
             </View>
         </View>
     );
-}
+});
 
 const styles = StyleSheet.create({
     container: {
-        backgroundColor: "#000",
+        backgroundColor: "#f9f9f9",
         paddingHorizontal: 16,
-        paddingVertical: 16,
+        paddingVertical: 8,
         borderBottomWidth: 1,
-        borderBottomColor: "#1f2937",
+        borderBottomColor: "rgba(0,0,0,0.15)",
     },
     header: {
         flexDirection: "row",
-        alignItems: "flex-start",
-        marginBottom: 10,
+        alignItems: "center",
+        marginBottom: 4,
     },
     avatar: {
-        width: 40,
-        height: 40,
-        borderRadius: 20,
-        backgroundColor: "#1f2937",
+        width: 32,
+        height: 32,
+        borderRadius: 27.6, // Matching Figma exactly
     },
     avatarFallback: {
-        width: 40,
-        height: 40,
-        borderRadius: 20,
-        backgroundColor: "#3b82f6",
+        width: 32,
+        height: 32,
+        borderRadius: 27.6,
+        backgroundColor: "#000",
         alignItems: "center",
         justifyContent: "center",
     },
     avatarFallbackText: {
         color: "#fff",
-        fontSize: 16,
+        fontSize: 14,
         fontWeight: "bold",
     },
     headerMeta: {
         flex: 1,
-        marginLeft: 10,
+        marginLeft: 8,
     },
     nameRow: {
         flexDirection: "row",
@@ -211,188 +254,189 @@ const styles = StyleSheet.create({
         gap: 4,
     },
     displayName: {
-        color: "#fff",
-        fontSize: 15,
-        fontWeight: "700",
+        fontSize: 16,
+        fontWeight: "bold",
+        color: "#000",
     },
     usernameTime: {
-        color: "#6b7280",
-        fontSize: 13,
-    },
-    badgeRow: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 8,
-    },
-    positionBadge: {
-        backgroundColor: "rgba(59, 130, 246, 0.2)",
-        paddingHorizontal: 10,
-        paddingVertical: 4,
-        borderRadius: 4,
-        borderWidth: 1,
-        borderColor: "#3b82f6",
-    },
-    positionBadgeText: {
-        color: "#60a5fa",
         fontSize: 12,
-        fontWeight: "700",
+        color: "rgba(0,0,0,0.5)",
+        fontWeight: "500",
+    },
+    typeBadge: {
+        paddingHorizontal: 4,
+        paddingVertical: 1,
+        borderRadius: 4,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    typeBadgeText: {
+        fontSize: 10,
+        fontWeight: "600",
+    },
+    rightHeader: {
+        alignItems: "flex-end",
     },
     pnlText: {
-        color: "#34d399",
         fontSize: 16,
-        fontWeight: "900",
+        fontWeight: "bold",
+        color: "#34c759",
     },
-    thesisBadge: {
-        backgroundColor: "rgba(107, 114, 128, 0.2)",
-        paddingHorizontal: 10,
-        paddingVertical: 4,
-        borderRadius: 4,
-        borderWidth: 1,
-        borderColor: "#6b7280",
+    proofBadge: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 2,
     },
-    thesisBadgeText: {
-        color: "#9ca3af",
-        fontSize: 12,
-        fontWeight: "700",
+    proofBadgeText: {
+        fontSize: 10,
+        color: "#34d399",
+        fontWeight: "bold",
+    },
+    contentWrapper: {
+        flexDirection: 'row',
+        gap: 6,
+        marginBottom: 8,
+    },
+    contentLine: {
+        width: 1,
+        backgroundColor: "rgba(0,0,0,0.15)",
+        marginVertical: 4,
+        borderRadius: 1,
+        height: 94, // Matching Figma line height
     },
     postContent: {
-        color: "#e5e7eb",
-        fontSize: 14,
-        lineHeight: 20,
-        marginBottom: 12,
+        flex: 1,
+        fontSize: 12,
+        color: "#000",
+        lineHeight: 18,
+        fontWeight: "500",
     },
     marketCard: {
-        backgroundColor: "#111",
         borderRadius: 16,
-        borderWidth: 1,
-        borderColor: "#1f2937",
-        padding: 12,
+        padding: 4,
         marginBottom: 12,
+    },
+    marketInnerCard: {
+        backgroundColor: "#fff",
+        borderRadius: 12,
+        padding: 8,
     },
     marketHeader: {
         flexDirection: "row",
         alignItems: "center",
         gap: 10,
-        marginBottom: 12,
     },
-    marketImageFallback: {
+    marketImageWrapper: {
         width: 40,
         height: 40,
         borderRadius: 8,
-        backgroundColor: "#1f2937",
-        alignItems: "center",
-        justifyContent: "center",
+        overflow: 'hidden',
+        borderWidth: 1,
+        borderColor: "rgba(0,0,0,0.15)",
     },
-    marketImageText: {
-        fontSize: 20,
+    marketImage: {
+        width: '100%',
+        height: '100%',
     },
     marketQuestion: {
         flex: 1,
-        color: "#e5e7eb",
-        fontSize: 14,
-        fontWeight: "600",
-        lineHeight: 18,
-    },
-    positionDetails: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 12,
-        marginBottom: 12,
-    },
-    yesPill: {
-        backgroundColor: "rgba(52, 211, 153, 0.2)",
-        paddingHorizontal: 20,
-        paddingVertical: 12,
-        borderRadius: 12,
-        borderWidth: 1,
-        borderColor: "#34d399",
-    },
-    yesPillText: {
-        color: "#34d399",
-        fontSize: 18,
-        fontWeight: "800",
-    },
-    sharesText: {
-        color: "#e5e7eb",
-        fontSize: 16,
-        fontWeight: "700",
-        flex: 1,
-    },
-    valueText: {
-        color: "#fff",
-        fontSize: 18,
-        fontWeight: "800",
-    },
-    tradeBar: {
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "space-between",
-        backgroundColor: "#0ea5e9",
-        borderRadius: 12,
-        padding: 12,
-    },
-    tradeBarLeft: {
-        flexDirection: "row",
-        gap: 24,
-    },
-    tradeBarItem: {
-        gap: 2,
-    },
-    tradeBarLabel: {
-        color: "rgba(255,255,255,0.7)",
-        fontSize: 11,
-        fontWeight: "600",
-    },
-    tradeBarValue: {
-        color: "#fff",
-        fontSize: 16,
-        fontWeight: "800",
-    },
-    tradeButton: {
-        backgroundColor: "#000",
-        paddingHorizontal: 28,
-        paddingVertical: 12,
-        borderRadius: 12,
-    },
-    tradeButtonText: {
-        color: "#fff",
-        fontSize: 14,
-        fontWeight: "800",
-    },
-    avatarStack: {
-        flexDirection: "row",
-        alignItems: "center",
-        marginBottom: 12,
-    },
-    miniAvatar: {
-        width: 24,
-        height: 24,
-        borderRadius: 12,
-        borderWidth: 2,
-        borderColor: "#000",
-    },
-    avatarStackText: {
-        color: "#6b7280",
         fontSize: 12,
         fontWeight: "600",
-        marginLeft: 6,
+        color: "#171717",
+        lineHeight: 18,
+    },
+    positionDataRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginTop: 16,
+    },
+    outcomePill: {
+        backgroundColor: "rgba(52, 199, 89, 0.25)",
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        borderRadius: 5,
+        minWidth: 44,
+        alignItems: 'center',
+    },
+    outcomePillSold: {
+        backgroundColor: "rgba(237, 66, 40, 0.25)",
+    },
+    outcomePillText: {
+        color: "#34c759",
+        fontSize: 16,
+        fontWeight: "600",
+    },
+    outcomePillTextSold: {
+        color: "#FF383C",
+    },
+    metricsGroup: {
+        flexDirection: 'row',
+        gap: 16,
+    },
+    metricItemText: {
+        fontSize: 16,
+        fontWeight: "600",
+        color: "#171717",
+    },
+    marketFooter: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+    },
+    footerMetrics: {
+        flexDirection: 'row',
+        gap: 12,
+    },
+    footerMetricColumn: {
+        justifyContent: 'center',
+    },
+    footerMetricLabel: {
+        fontSize: 12,
+        fontWeight: "bold",
+        opacity: 0.5,
+    },
+    footerMetricValue: {
+        fontSize: 16,
+        fontWeight: "bold",
+    },
+    tradeActionButton: {
+        backgroundColor: "#171717",
+        paddingHorizontal: 20,
+        paddingVertical: 8,
+        borderRadius: 12,
+        borderWidth: 2,
+        borderColor: "rgba(255,255,255,0.25)",
+    },
+    tradeActionButtonText: {
+        color: "#fff",
+        fontSize: 16,
+        fontWeight: "bold",
     },
     actionBar: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 32,
+        justifyContent: "space-between",
+        paddingHorizontal: 8,
+        marginTop: 4,
+    },
+    actionBarLeft: {
+        flexDirection: "row",
+        gap: 24,
     },
     actionItem: {
         flexDirection: "row",
         alignItems: "center",
         gap: 4,
     },
-    actionText: {
-        color: "#6b7280",
-        fontSize: 13,
+    actionItemText: {
+        fontSize: 12,
         fontWeight: "600",
+        color: "#171717",
     },
-    actionTextGreen: {
+    textGreen: {
         color: "#34d399",
-    },
+    }
 });

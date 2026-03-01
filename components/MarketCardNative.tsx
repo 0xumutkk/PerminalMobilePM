@@ -1,3 +1,4 @@
+import React, { memo } from "react";
 import { View, Text, StyleSheet, Pressable } from "react-native";
 import { Image } from "expo-image";
 import { type Market, type MarketGroup } from "../lib/mock-data";
@@ -102,7 +103,7 @@ function generateSparklinePath(data: { timestamp: number; value: number }[], wid
     return { path: d, isPositive };
 }
 
-export function MarketCardNative({ group, onBuyYes, onBuyNo, isFirst, isLast }: MarketCardNativeProps) {
+export const MarketCardNative = memo(function MarketCardNative({ group, onBuyYes, onBuyNo, isFirst, isLast }: MarketCardNativeProps) {
     const router = useRouter();
     const isMultiChoice = group.markets.length > 1;
 
@@ -239,7 +240,7 @@ export function MarketCardNative({ group, onBuyYes, onBuyNo, isFirst, isLast }: 
             {!isLast && <DashedLine />}
         </View>
     );
-}
+});
 
 const styles = StyleSheet.create({
     container: {
