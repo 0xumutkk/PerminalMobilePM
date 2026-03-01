@@ -4,6 +4,7 @@ import { usePrivy, useLoginWithOAuth } from "@privy-io/expo";
 import { StatusBar } from "expo-status-bar";
 import { Redirect } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { supabase } from "../lib/supabase";
 
 // Simple icons
 const AppleIcon = () => (
@@ -60,6 +61,47 @@ function LoginButtons({ disabled }: { disabled: boolean }) {
 
 export default function LoginScreen() {
     const { isReady, user } = usePrivy();
+
+    useEffect(() => {
+        const syncUser = async () => {
+            if (isReady && user) {
+                try {
+                    let defaultUsername = user.id.slice(0, 10);
+
+                    const twitterAccount = user.linked_accounts.find(a => a.type === 'twitter_oauth') as any;
+                    const googleAccount = user.linked_accounts.find(a => a.type === 'google_oauth') as any;
+                    const walletAccount = user.linked_accounts.find(a => a.type === 'wallet' || a.type === 'smart_wallet') as any;
+
+                    if (twitterAccount?.username) {
+                        defaultUsername = twitterAccount.username;
+                    } else if (googleAccount?.name) {
+                        defaultUsername = googleAccount.name.replace(/\\s+/g, '').toLowerCase();
+                    }
+
+                    const profileData: any = {
+                        id: user.id,
+                        wallet_address: walletAccount?.address || null,
+                        username: defaultUsername,
+                    };
+
+                    const { error } = await supabase.from("profiles").upsert(
+                        profileData,
+                        { onConflict: 'id' }
+                    );
+
+                    if (error) {
+                        console.error("Failed to sync user to Supabase profiles:", error);
+                    } else {
+                        console.log("User successfully synced to Supabase:", user.id);
+                    }
+                } catch (e) {
+                    console.error("Unexpected error syncing user:", e);
+                }
+            }
+        };
+
+        syncUser();
+    }, [isReady, user]);
 
     if (isReady && user) {
         return <Redirect href="/(app)" />;
