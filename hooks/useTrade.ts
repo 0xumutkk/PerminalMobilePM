@@ -275,5 +275,6 @@ export function useTrade() {
         fetchBalance,
         isWalletConnected: authenticated && !!activeWallet?.address,
         walletAddress: activeWallet?.address,
+        isJupiter: (marketId: string) => !marketId.includes("-") || marketId.startsWith("POLY-"),
     };
 }

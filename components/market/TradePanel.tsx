@@ -78,16 +78,25 @@ export function TradePanel({
     }, [tradeMode, reset]);
 
     const refreshSideBalance = useCallback(async () => {
-        if (!walletAddress || !selectedOutcomeMint) {
+        if (!walletAddress) {
             setSideBalance(0);
             return;
         }
-        try {
-            const balance = await getTokenBalance(walletAddress, selectedOutcomeMint);
-            setSideBalance(balance);
-        } catch {
-            setSideBalance(0);
+
+        // For DFlow/Legacy markets
+        if (selectedOutcomeMint) {
+            try {
+                const balance = await getTokenBalance(walletAddress, selectedOutcomeMint);
+                setSideBalance(balance);
+                return;
+            } catch {
+                setSideBalance(0);
+                return;
+            }
         }
+
+        // For Jupiter markets, we rely on position data which handles balance mapping via positionPubkey
+        setSideBalance(0);
     }, [walletAddress, selectedOutcomeMint]);
 
     useEffect(() => {
@@ -167,7 +176,8 @@ export function TradePanel({
     const handleTrade = async () => {
         const numAmount = parseFloat(amount);
         if (isNaN(numAmount) || numAmount < 0.1) return;
-        if (!selectedOutcomeMint) return;
+        // Jupiter markets use marketId, DFlow uses selectedOutcomeMint.
+        if (!market.id) return;
 
         const expectedPrice = side === "YES" ? market.yesPrice : (1 - market.yesPrice);
         const signature =
@@ -212,13 +222,15 @@ export function TradePanel({
 
     const availableBalance = tradeMode === "BUY" ? (usdcBalance ?? 0) : sideBalance;
     const isInsufficientBalance = !!amount && parseFloat(amount) > availableBalance;
-    const selectedOutputMint = selectedOutcomeMint;
     const hasSellInventory = sideBalance > 0;
+
+    // Jupiter markets don't use mints but use marketId for trading.
     const isMarketTradeable =
-        !!selectedOutputMint &&
+        (!!selectedOutcomeMint || !!market.marketId) &&
         market.isTradeable !== false;
-    const tradeBlockedReason = !selectedOutputMint
-        ? "This market has no tradeable token mint."
+
+    const tradeBlockedReason = (!selectedOutcomeMint && !market.marketId)
+        ? "This market has no tradeable identifier."
         : tradeMode === "SELL" && !hasSellInventory
             ? `No ${side} shares available to sell.`
             : market.isTradeable === false

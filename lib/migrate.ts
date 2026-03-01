@@ -9,6 +9,7 @@ export async function migrateFigmaPosts() {
         }
         const targetUserId = (profiles[0] as any).id;
 
+        // Note: 'is_verified' is omitted because it seems missing from the current Supabase schema cache (PGRST204)
         const posts = [
             {
                 user_id: targetUserId,
@@ -17,7 +18,6 @@ export async function migrateFigmaPosts() {
                 market_slug: 'fed-rates-2025',
                 market_question: "No change in Fed interest rates after December 2025 meeting?",
                 post_type: 'trade',
-                is_verified: true,
                 trade_metadata: {
                     outcome: 'Yes',
                     shares_count: 12300,
@@ -34,7 +34,6 @@ export async function migrateFigmaPosts() {
                 market_slug: 'fed-rates-2025',
                 market_question: "No change in Fed interest rates after December 2025 meeting?",
                 post_type: 'thesis',
-                is_verified: false,
                 trade_metadata: {
                     current_price: 0.97
                 }
@@ -46,7 +45,6 @@ export async function migrateFigmaPosts() {
                 market_slug: 'fed-rates-2025',
                 market_question: "No change in Fed interest rates after December 2025 meeting?",
                 post_type: 'sold',
-                is_verified: true,
                 trade_metadata: {
                     outcome: 'No',
                     current_price: 0.97
@@ -57,11 +55,15 @@ export async function migrateFigmaPosts() {
         const results = [];
         for (const post of posts) {
             const { data, error } = await supabase.from('posts').insert(post as any).select();
-            if (error) console.error("Error:", error);
-            else if (data) results.push((data[0] as any).id);
+            if (error) {
+                console.error("Error inserting post:", error);
+            } else if (data) {
+                results.push((data[0] as any).id);
+            }
         }
         return { success: true, count: results.length };
     } catch (e: any) {
+        console.error("Migration catch error:", e);
         return { success: false, error: e.message };
     }
 }

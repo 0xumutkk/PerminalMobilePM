@@ -23,6 +23,7 @@ export interface Market {
     polymarketClobTokenId?: string;
     eventId?: string;
     eventTitle?: string;
+    eventVolume?: number;
     provider?: "polymarket" | "kalshi" | string;
     buyYesPriceUsd?: number | null;
     buyNoPriceUsd?: number | null;

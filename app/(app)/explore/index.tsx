@@ -1,6 +1,6 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import { StyleSheet, View, Text, TouchableOpacity } from "react-native";
-import { useRouter } from "expo-router";
+import { useRouter, useNavigation } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Feed } from "../../../components/social/Feed";
 import { CreatePost } from "../../../components/social/CreatePost";
@@ -19,12 +19,24 @@ export default function ExploreScreen() {
   }, []);
 
   const router = useRouter();
+  const navigation = useNavigation();
+
   const handleTradePress = useCallback((marketId: string) => {
     router.push({
       pathname: "/(app)/market/[id]",
       params: { id: marketId }
     });
   }, [router]);
+
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('tabPress' as any, (e: any) => {
+      if (navigation.isFocused()) {
+        setRefreshKey(prev => prev + 1);
+      }
+    });
+
+    return unsubscribe;
+  }, [navigation]);
 
   React.useEffect(() => {
     // Temporary migration trigger

@@ -72,25 +72,51 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
     const postType = (post as any).post_type || 'standard';
     const tradeData = (post as any).trade_metadata || {};
     const pnlPercent = tradeData?.pnl_percent || 0;
-
     const isPosition = postType === 'trade' || postType === 'position';
     const isThesis = postType === 'thesis';
     const isSold = postType === 'sold';
+    const isBought = postType === 'bought';
+    const isWon = postType === 'won';
 
     // UI Variants based on post type
     // Figma Colors: 
     // Position: #0088FF (Blue)
     // Thesis: #D9D9D9 (Grey)
     // Sold: #FF383C (Red)
-    const cardBgColor = isPosition ? "#0088FF" : isSold ? "#FF383C" : "#D9D9D9";
+    // Bought: #34C759 (Green)
+    // Won: #FBBC05 (Gold)
 
-    // Header Badge Styles
-    const headerBadgeBg = isPosition ? "rgba(63, 142, 247, 0.25)" : isSold ? "rgba(237, 66, 40, 0.25)" : "#D9D9D9";
-    const headerBadgeText = isPosition ? "#088FFF" : isSold ? "#FF383C" : "#171717";
+    let cardBgColor = "#D9D9D9";
+    let headerBadgeBg = "rgba(0, 0, 0, 0.05)";
+    let headerBadgeText = "#171717";
+    let badgeLabel = "Thesis";
+
+    if (isPosition) {
+        cardBgColor = "#0088FF";
+        headerBadgeBg = "rgba(0, 136, 255, 0.15)";
+        headerBadgeText = "#0088FF";
+        badgeLabel = "Position";
+    } else if (isSold) {
+        cardBgColor = "#FF383C";
+        headerBadgeBg = "rgba(237, 66, 40, 0.15)";
+        headerBadgeText = "#FF383C";
+        badgeLabel = "Sold";
+    } else if (isWon) {
+        cardBgColor = "#FBBC05";
+        headerBadgeBg = "rgba(251, 188, 5, 0.15)";
+        headerBadgeText = "#FBBC05";
+        badgeLabel = "Won";
+    } else if (isBought) {
+        cardBgColor = "#34C759";
+        headerBadgeBg = "rgba(52, 199, 89, 0.15)";
+        headerBadgeText = "#34C759";
+        badgeLabel = "Bought";
+    }
 
     // Text themes
-    const footerTextColor = (isPosition || isSold) ? "#FFFFFF" : "#000000";
-    const footerSubTextColor = (isPosition || isSold) ? "rgba(255,255,255,0.5)" : "rgba(0,0,0,0.5)";
+    const isDarkCard = isPosition || isSold || isBought || isWon;
+    const footerTextColor = isDarkCard ? "#FFFFFF" : "#000000";
+    const footerSubTextColor = isDarkCard ? "rgba(255,255,255,0.7)" : "rgba(0,0,0,0.5)";
 
     return (
         <View style={styles.container}>
@@ -114,11 +140,13 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
                         <Text style={styles.usernameTime}>@{post.author?.username} • {timeAgo}</Text>
 
                         {/* Type Badge */}
-                        <View style={[styles.typeBadge, { backgroundColor: headerBadgeBg }]}>
-                            <Text style={[styles.typeBadgeText, { color: headerBadgeText }]}>
-                                {isPosition ? "Position" : isSold ? "Sold" : "Thesis"}
-                            </Text>
-                        </View>
+                        {postType !== 'standard' && (
+                            <View style={[styles.typeBadge, { backgroundColor: headerBadgeBg }]}>
+                                <Text style={[styles.typeBadgeText, { color: headerBadgeText }]}>
+                                    {badgeLabel}
+                                </Text>
+                            </View>
+                        )}
                     </View>
                 </View>
 
@@ -161,11 +189,11 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
                             <CircularGauge percentage={liveProbability} size={32} />
                         </View>
 
-                        {/* Middle Row (Metric Pill + Details) - Only for Position/Sold */}
-                        {(isPosition || isSold) && (
+                        {/* Middle Row (Metric Pill + Details) - Only for Position/Sold/Bought/Won */}
+                        {(isPosition || isSold || isBought || isWon) && (
                             <View style={styles.positionDataRow}>
-                                <View style={[styles.outcomePill, isSold && styles.outcomePillSold]}>
-                                    <Text style={[styles.outcomePillText, isSold && styles.outcomePillTextSold]}>
+                                <View style={[styles.outcomePill, (isSold || isBought || isWon) && { backgroundColor: 'rgba(0,0,0,0.05)' }]}>
+                                    <Text style={[styles.outcomePillText, (isSold || isBought || isWon) && { color: '#000' }]}>
                                         {tradeData.outcome || 'Yes'}
                                     </Text>
                                 </View>
@@ -235,11 +263,11 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
 
 const styles = StyleSheet.create({
     container: {
-        backgroundColor: "#f9f9f9",
+        backgroundColor: "#fff",
         paddingHorizontal: 16,
-        paddingVertical: 8,
+        paddingVertical: 12,
         borderBottomWidth: 1,
-        borderBottomColor: "rgba(0,0,0,0.15)",
+        borderBottomColor: "rgba(0,0,0,0.05)",
     },
     header: {
         flexDirection: "row",

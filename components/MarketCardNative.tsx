@@ -15,8 +15,7 @@ export interface MarketCardNativeProps {
     onBuyNo?: (market: Market) => void;
 }
 
-function formatVolume(volume: number) {
-    const volumeUSD = volume / 1_000_000;
+function formatVolume(volumeUSD: number) {
     if (volumeUSD <= 0) return "$0 Vol.";
     if (volumeUSD < 1) return "<$1 Vol.";
     if (volumeUSD >= 1_000_000_000) return `$${(volumeUSD / 1_000_000_000).toFixed(1)}B Vol.`;
@@ -233,7 +232,7 @@ export const MarketCardNative = memo(function MarketCardNative({ group, onBuyYes
                         <View style={[styles.dot, { backgroundColor: '#34c759' }]} />
                         <View style={[styles.dot, { backgroundColor: '#ff3b30', marginLeft: -6 }]} />
                     </View>
-                    <Text style={styles.tradersCount}>+{Math.floor(group.volume / 8000000) + 12}</Text>
+                    <Text style={styles.tradersCount}>+{Math.floor(group.volume / 8) + 12}</Text>
                 </View>
             </View>
 

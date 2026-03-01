@@ -194,8 +194,8 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         padding: 16,
         borderBottomWidth: 1,
-        borderBottomColor: "#1f2937",
-        backgroundColor: "#000",
+        borderBottomColor: "rgba(0,0,0,0.05)",
+        backgroundColor: "#fff",
     },
     avatarContainer: {
         marginRight: 12,
@@ -204,7 +204,7 @@ const styles = StyleSheet.create({
         width: 40,
         height: 40,
         borderRadius: 20,
-        backgroundColor: "#1f2937",
+        backgroundColor: "#eee",
     },
     avatarFallback: {
         width: 40,
@@ -222,7 +222,7 @@ const styles = StyleSheet.create({
         flex: 1,
     },
     input: {
-        color: "#fff",
+        color: "#171717",
         fontSize: 16,
         minHeight: 40,
         textAlignVertical: "top",
@@ -237,13 +237,13 @@ const styles = StyleSheet.create({
         paddingHorizontal: 12,
         paddingVertical: 6,
         borderRadius: 8,
-        backgroundColor: "#111",
+        backgroundColor: "#fff",
         borderWidth: 1,
-        borderColor: "#1f2937",
+        borderColor: "rgba(0,0,0,0.1)",
     },
     typeButtonActive: {
-        backgroundColor: "rgba(52, 211, 153, 0.1)",
-        borderColor: "#34d399",
+        backgroundColor: "rgba(5, 150, 105, 0.05)",
+        borderColor: "#059669",
     },
     typeButtonText: {
         color: "#6b7280",
@@ -251,14 +251,14 @@ const styles = StyleSheet.create({
         fontWeight: "700",
     },
     typeButtonTextActive: {
-        color: "#34d399",
+        color: "#059669",
     },
     footer: {
         flexDirection: "row",
         justifyContent: "flex-end",
     },
     button: {
-        backgroundColor: "#34d399",
+        backgroundColor: "#059669",
         paddingVertical: 8,
         paddingHorizontal: 20,
         borderRadius: 20,
@@ -269,7 +269,7 @@ const styles = StyleSheet.create({
         opacity: 0.5,
     },
     buttonText: {
-        color: "#000",
+        color: "#fff",
         fontSize: 14,
         fontWeight: "700",
     },

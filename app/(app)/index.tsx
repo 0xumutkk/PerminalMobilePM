@@ -14,7 +14,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { StatusBar } from "expo-status-bar";
-import { useRouter } from "expo-router";
+import { useRouter, useNavigation } from "expo-router";
 import { useEmbeddedSolanaWallet, isConnected } from "@privy-io/expo";
 import { useFundSolanaWallet } from "@privy-io/expo/ui";
 import { DepositModal } from "../../components/DepositModal";
@@ -304,8 +304,8 @@ export default function HomeFeed() {
         setShowTradePanel(true);
     };
 
-    const handleTradeSuccess = (signature: string) => {
-        Alert.alert("Success", `Trade successful! Signature: ${signature.slice(0, 8)}...`);
+    const handleTradeSuccess = (details: { signature: string; outcome: string }) => {
+        Alert.alert("Success", `Trade successful! Outcome: ${details.outcome}`);
         setShowTradePanel(false);
         if (primaryAddress) {
             getUsdcBalance(primaryAddress).then(setUsdcBalance);
@@ -372,8 +372,8 @@ export default function HomeFeed() {
         setMarketsError(null);
         try {
             const [{ markets: list, categories: feedCategories, nextCursor: initialCursor }, tagsByCategories] = await Promise.all([
-                // Increase limit from 50 to 500 to compensate for丢弃 Kalshi events post-fetch
-                fetchMarketsForApp({ limit: 500, sort: "volume" }),
+                // Reduce limit from 500 to 250 for faster initial load
+                fetchMarketsForApp({ limit: 250, sort: "volume" }),
                 fetchJupiterTagsByCategories().catch(() => ({})),
             ]);
             setNextCursor(initialCursor);
@@ -526,6 +526,16 @@ export default function HomeFeed() {
     useEffect(() => {
         loadBalances();
     }, [loadBalances]);
+
+    const navigation = useNavigation();
+    useEffect(() => {
+        const unsubscribe = navigation.addListener('tabPress' as any, (e: any) => {
+            if (navigation.isFocused()) {
+                onRefresh();
+            }
+        });
+        return unsubscribe;
+    }, [navigation, onRefresh]);
 
     useEffect(() => {
         const id = setInterval(() => setListNowMs(Date.now()), 60_000);
@@ -681,7 +691,7 @@ export default function HomeFeed() {
                     category: m.category,
                     imageUrl: m.imageUrl,
                     markets: [m],
-                    volume: m.volume,
+                    volume: m.eventVolume && m.eventVolume > 0 ? m.eventVolume : m.volume,
                     resolveDate: m.resolveDate,
                     status: m.status,
                     provider: m.provider,
@@ -689,7 +699,12 @@ export default function HomeFeed() {
             } else {
                 const g = groupMap.get(eid)!;
                 g.markets.push(m);
-                g.volume += m.volume;
+                // If the market doesn't have an eventVolume specifically assigned,
+                // we sum its individual volume into the total. If it did have eventVolume,
+                // the group's volume was already set to that total once and we don't sum further.
+                if (!m.eventVolume || m.eventVolume <= 0) {
+                    g.volume += m.volume;
+                }
                 // Keep the earliest resolve date
                 if (m.resolveDate && (!g.resolveDate || m.resolveDate < g.resolveDate)) {
                     g.resolveDate = m.resolveDate;

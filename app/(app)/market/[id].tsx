@@ -515,14 +515,14 @@ function MarketDetailScreen() {
 
                                         <View style={styles.marketCardFooter}>
                                             <Text style={styles.marketCardVolume}>
-                                                ${(m.volume / 1000000).toFixed(0)}M Volume
+                                                ${m.volume >= 1_000_000 ? (m.volume / 1_000_000).toFixed(1) + "M" : m.volume >= 1_000 ? (m.volume / 1_000).toFixed(1) + "K" : m.volume.toFixed(0)} Volume
                                             </Text>
                                             <View style={styles.marketCardTraders}>
                                                 <View style={styles.avatarDots}>
                                                     <View style={[styles.dot, { backgroundColor: '#34c759' }]} />
                                                     <View style={[styles.dot, { backgroundColor: '#ff3b30', marginLeft: -6 }]} />
                                                 </View>
-                                                <Text style={styles.tradersCount}>+{Math.floor(m.volume / 8000000) + 12}</Text>
+                                                <Text style={styles.tradersCount}>+{Math.floor(m.volume / 8) + 12}</Text>
                                             </View>
                                         </View>
                                     </Pressable>
@@ -658,7 +658,7 @@ function MarketDetailScreen() {
                                     </View>
                                     <View style={styles.aboutStatValueBox}>
                                         <Text style={styles.aboutStatValue}>
-                                            ${market.volume >= 1_000_000 ? (market.volume / 1_000_000).toFixed(2) + "M" : market.volume >= 1_000 ? (market.volume / 1_000).toFixed(1) + "K" : market.volume.toFixed(0)}
+                                            ${market.volume >= 1_000_000_000 ? (market.volume / 1_000_000_000).toFixed(1) + "B" : market.volume >= 1_000_000 ? (market.volume / 1_000_000).toFixed(1) + "M" : market.volume >= 1_000 ? (market.volume / 1_000).toFixed(1) + "K" : market.volume.toFixed(0)}
                                         </Text>
                                     </View>
                                 </View>
@@ -692,7 +692,7 @@ function MarketDetailScreen() {
                                     </View>
                                     <View style={styles.aboutStatValueBox}>
                                         <Text style={styles.aboutStatValue}>
-                                            ${(market.openInterest ?? 0) >= 1_000_000 ? ((market.openInterest ?? 0) / 1_000_000).toFixed(2) + "M" : (market.openInterest ?? 0) >= 1_000 ? ((market.openInterest ?? 0) / 1_000).toFixed(1) + "K" : (market.openInterest ?? 0).toFixed(0)}
+                                            ${(market.openInterest ?? 0) >= 1_000_000 ? ((market.openInterest ?? 0) / 1_000_000).toFixed(1) + "M" : (market.openInterest ?? 0) >= 1_000 ? ((market.openInterest ?? 0) / 1_000).toFixed(1) + "K" : (market.openInterest ?? 0).toFixed(0)}
                                         </Text>
                                     </View>
                                 </View>
@@ -747,7 +747,7 @@ function MarketDetailScreen() {
                     <View style={styles.statCard}>
                         <TrendingUp color="#666" size={16} />
                         <Text style={styles.statLabel}>Volume</Text>
-                        <Text style={styles.statValue}>${(market.volume / 1000).toFixed(0)}K</Text>
+                        <Text style={styles.statValue}>${market.volume >= 1_000_000 ? (market.volume / 1_000_000).toFixed(1) + "M" : market.volume >= 1_000 ? (market.volume / 1_000).toFixed(0) + "K" : market.volume.toFixed(0)}</Text>
                     </View>
                     <View style={styles.statCard}>
                         <Users color="#666" size={16} />
