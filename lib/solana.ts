@@ -4,6 +4,8 @@ const LAMPORTS_PER_SOL = 1e9;
 
 /** USDC mint on Solana mainnet */
 const USDC_MINT = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
+/** JupUSD mint on Solana (often used as collateral/quote in Jupiter Prediction) */
+const JUP_USD_MINT = new PublicKey("JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD");
 
 const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 const TOKEN_2022_PROGRAM_ID = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
@@ -83,7 +85,9 @@ export async function getTokenBalance(address: string, mintAddress: string): Pro
  * Fetch USDC (SPL token) balance for an address.
  */
 export async function getUsdcBalance(address: string): Promise<number> {
-    return getTokenBalance(address, USDC_MINT.toBase58());
+    const usdc = await getTokenBalance(address, USDC_MINT.toBase58());
+    const jupUsd = await getTokenBalance(address, JUP_USD_MINT.toBase58());
+    return usdc + jupUsd;
 }
 
 /**

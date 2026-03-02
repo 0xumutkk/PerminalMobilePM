@@ -61,6 +61,11 @@ export function useFeed(userId?: string, marketId?: string) {
         }
     }, [userId, marketId]);
 
+    // Initial fetch
+    useEffect(() => {
+        fetchFeed();
+    }, [fetchFeed]);
+
     // Real-time updates
     useEffect(() => {
         const channel = supabase

@@ -9,14 +9,14 @@ interface PositionCardProps {
 }
 
 function formatCompactNumber(value: number): string {
-    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
-    return value.toLocaleString(undefined, { maximumFractionDigits: 1 });
+    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
+    if (value >= 1_000) return `${(value / 1_000).toFixed(2)}K`;
+    return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
 function formatShares(value: number): string {
-    if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
-    return value.toLocaleString(undefined, { maximumFractionDigits: 1 });
+    if (value >= 1000) return `${(value / 1000).toFixed(2)}k`;
+    return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
 export default function PositionCard({ position, onPress }: PositionCardProps) {

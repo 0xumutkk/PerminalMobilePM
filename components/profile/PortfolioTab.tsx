@@ -40,7 +40,7 @@ export default function PortfolioTab({ usdcBalance, profilePnl, onRefresh }: Por
     const handleOpenMarket = (marketId: string) => {
         router.push({
             pathname: "/market/[id]",
-            params: { id: marketId },
+            params: { id: marketId, single: "true" },
         });
     };
 
@@ -135,7 +135,7 @@ export default function PortfolioTab({ usdcBalance, profilePnl, onRefresh }: Por
                 <View style={styles.summaryCard}>
                     <View style={styles.cardHeader}>
                         <CircleDollarSign size={20} color="#34c759" fill="#34c759" strokeWidth={1} />
-                        <Text style={styles.cardTitle}>Cash</Text>
+                        <Text style={styles.cardTitle}>USD</Text>
                     </View>
                     <View style={styles.cardValueBox}>
                         <Text style={styles.cardValue}>{formatValue(usdcBalance || 0)}</Text>

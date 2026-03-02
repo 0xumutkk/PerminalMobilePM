@@ -57,11 +57,11 @@ export function usePositions() {
             console.log(`[usePositions] Found ${jupPositions.length} positions`);
 
             const discoveredPositions: Position[] = jupPositions.map((pos) => {
-                const amount = parseInt(pos.contracts, 10);
+                const amount = parseFloat(pos.contracts || "0");
                 const avgPrice = microUsdToUsd(pos.avgPriceUsd);
-                const currentPrice = pos.currentPriceUsd != null ? microUsdToUsd(pos.currentPriceUsd) : avgPrice; // Fallback to cost basis if unknown
-                const costBasis = microUsdToUsd(pos.costBasisUsd) || (amount * avgPrice);
-                const currentValue = microUsdToUsd(pos.currentValueUsd) || (amount * currentPrice);
+                const currentPrice = pos.markPriceUsd != null ? microUsdToUsd(pos.markPriceUsd) : avgPrice;
+                const costBasis = microUsdToUsd(pos.sizeUsd) || (amount * avgPrice);
+                const currentValue = microUsdToUsd(pos.valueUsd) || (amount * currentPrice);
                 const pnl = microUsdToUsd(pos.pnlUsd) || (currentValue - costBasis);
                 const pnlPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
 
@@ -91,7 +91,7 @@ export function usePositions() {
                     pnl,
                     pnlPct,
                     imageUrl: pos.imageUrl,
-                    mint: pos.positionPubkey, // Important identifier mapped here for UI
+                    mint: pos.pubkey, // Important identifier mapped here for UI
                     marketStatus: pos.marketStatus,
                     marketResult: pos.marketResult,
                     isClosed,

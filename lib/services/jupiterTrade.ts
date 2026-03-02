@@ -50,8 +50,9 @@ export interface JupiterTradeServiceProps {
         ownerPubkey: string;
         marketId: string;
         side: "YES" | "NO";
-        contracts: number; // e.g. 10 shares
-        maxBuyPriceUsd?: number; // e.g. 0.50
+        amountUsdc: number; // Spend amount in USD
+        maxBuyPriceUsd?: number;
+        slippageBps?: number;
     }): Promise<JupiterCreateOrderResponse>;
 
     /**
@@ -61,8 +62,10 @@ export interface JupiterTradeServiceProps {
         ownerPubkey: string;
         marketId: string;
         side: "YES" | "NO";
-        contracts: number; // e.g. 10 shares
-        minSellPriceUsd?: number; // e.g. 0.40
+        contracts: number; // Quantity of shares to sell
+        minSellPriceUsd?: number;
+        positionPubkey?: string;
+        slippageBps?: number;
     }): Promise<JupiterCreateOrderResponse>;
 }
 
@@ -77,7 +80,10 @@ export const jupiterTradeService: JupiterTradeServiceProps = {
 
         if (!res.ok) {
             const errorText = await res.text().catch(() => "");
-            throw new Error(`Failed to create Jupiter order (HTTP ${res.status}): ${errorText}`);
+            // Use warn instead of error to avoid triggering the global crash handler/redbox in dev
+            console.warn(`[JupiterTrade] API returned ${res.status}. Body: ${errorText}`);
+            console.warn(`[JupiterTrade] Failed Payload:`, JSON.stringify(req));
+            throw new Error(`Jupiter trade failed (${res.status}): ${errorText || "Unknown error"}`);
         }
 
         return (await res.json()) as JupiterCreateOrderResponse;
@@ -112,10 +118,12 @@ export const jupiterTradeService: JupiterTradeServiceProps = {
         return this.createOrder({
             ownerPubkey: params.ownerPubkey,
             marketId: params.marketId,
-            side: "buy",
+            isBuy: true,
             isYes: params.side === "YES",
-            contracts: params.contracts.toString(),
-            maxBuyPriceUsd: params.maxBuyPriceUsd != null ? usdToMicroUsd(params.maxBuyPriceUsd) : undefined,
+            depositAmount: String(usdToMicroUsd(params.amountUsdc)),
+            maxBuyPriceUsd: params.maxBuyPriceUsd != null ? String(usdToMicroUsd(params.maxBuyPriceUsd)) : undefined,
+            depositMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // Explicitly use USDC on Solana
+            slippageBps: params.slippageBps ?? 100, // Default 1%
         });
     },
 
@@ -123,10 +131,12 @@ export const jupiterTradeService: JupiterTradeServiceProps = {
         return this.createOrder({
             ownerPubkey: params.ownerPubkey,
             marketId: params.marketId,
-            side: "sell",
+            isBuy: false,
             isYes: params.side === "YES",
-            contracts: params.contracts.toString(),
-            minSellPriceUsd: params.minSellPriceUsd != null ? usdToMicroUsd(params.minSellPriceUsd) : undefined,
+            contracts: String(params.contracts),
+            minSellPriceUsd: params.minSellPriceUsd != null ? String(usdToMicroUsd(params.minSellPriceUsd)) : undefined,
+            positionPubkey: params.positionPubkey,
+            slippageBps: params.slippageBps ?? 100, // Default 1%
         });
     },
 };

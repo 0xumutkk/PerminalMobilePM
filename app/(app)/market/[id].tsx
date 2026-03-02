@@ -17,6 +17,7 @@ import { Image } from "expo-image";
 import { Modal } from "react-native";
 import { getTokenBalance } from "../../../lib/solana";
 import { GlassHeader } from "../../../components/ui/GlassHeader";
+import { usePositions } from "../../../hooks/usePositions";
 import {
     fetchClusteredMarketChartFromJupiter,
     fetchMarketActivityTradesFromJupiter,
@@ -90,6 +91,8 @@ function MarketDetailScreen() {
     const solanaWallet = useEmbeddedSolanaWallet();
     const isWalletConnected = isConnected(solanaWallet);
     const walletAddress = isWalletConnected && solanaWallet.wallets?.[0] ? solanaWallet.wallets[0].address : null;
+
+    const { activePositions } = usePositions();
 
     useEffect(() => {
         if (sideParam === "YES" || sideParam === "NO") {
@@ -378,12 +381,19 @@ function MarketDetailScreen() {
         : true;
     const chartColor = isUp ? "#10b981" : "#ef4444";
     const marketIddiaText = getMarketIddiaText(market);
-    const hasOpenPosition = yesBalance > 0.000001 || noBalance > 0.000001;
-    const preferredBuySide: TradeSide = initialSide;
+    const marketId = market.marketId || market.id;
+    const currentPosition = activePositions.find(p => p.marketId === id || p.marketId === marketId);
+
+    // Check if we have a position either via token balances (if they exist) or via Jupiter position accounts
+    const hasOpenPosition =
+        (currentPosition && currentPosition.amount > 0) ||
+        yesBalance > 0.000001 ||
+        noBalance > 0.000001;
+
+    const preferredBuySide: TradeSide = currentPosition ? currentPosition.side : initialSide;
     const preferredSellSide: TradeSide =
-        yesBalance > 0 || noBalance > 0
-            ? (yesBalance >= noBalance ? "YES" : "NO")
-            : initialSide;
+        currentPosition ? currentPosition.side :
+            (yesBalance >= noBalance ? "YES" : "NO");
     const primaryFooterLabel = hasOpenPosition ? "BUY" : "BUY YES";
     const secondaryFooterLabel = hasOpenPosition ? "SELL" : "BUY NO";
     const secondaryFooterMode: TradeMode = hasOpenPosition ? "SELL" : "BUY";
@@ -505,12 +515,43 @@ function MarketDetailScreen() {
                                         </View>
 
                                         <View style={styles.marketCardButtons}>
-                                            <Pressable style={styles.btnCardYes} onPress={() => handleOpenTrade("YES", "BUY", m)}>
-                                                <Text style={styles.btnTextCardYes}>Yes</Text>
-                                            </Pressable>
-                                            <Pressable style={styles.btnCardNo} onPress={() => handleOpenTrade("NO", "BUY", m)}>
-                                                <Text style={styles.btnTextCardNo}>No</Text>
-                                            </Pressable>
+                                            {(() => {
+                                                const mId = m.marketId || m.id;
+                                                const mPos = activePositions.find(p => p.marketId === mId);
+                                                const hasMOpenPosition = !!mPos && mPos.amount > 0;
+
+                                                if (hasMOpenPosition) {
+                                                    const mSide = mPos.side;
+                                                    const otherSide = mSide === "YES" ? "NO" : "YES";
+                                                    return (
+                                                        <>
+                                                            <Pressable
+                                                                style={[styles.btnCardBuy, { flex: 1 }]}
+                                                                onPress={() => handleOpenTrade(mSide, "BUY", m)}
+                                                            >
+                                                                <Text style={styles.btnTextCardBuy}>Buy {mSide.toLowerCase()}</Text>
+                                                            </Pressable>
+                                                            <Pressable
+                                                                style={[styles.btnCardSell, { flex: 1 }]}
+                                                                onPress={() => handleOpenTrade(mSide, "SELL", m)}
+                                                            >
+                                                                <Text style={styles.btnTextCardSell}>Sell {mSide.toLowerCase()}</Text>
+                                                            </Pressable>
+                                                        </>
+                                                    );
+                                                }
+
+                                                return (
+                                                    <>
+                                                        <Pressable style={styles.btnCardYes} onPress={() => handleOpenTrade("YES", "BUY", m)}>
+                                                            <Text style={styles.btnTextCardYes}>Yes</Text>
+                                                        </Pressable>
+                                                        <Pressable style={styles.btnCardNo} onPress={() => handleOpenTrade("NO", "BUY", m)}>
+                                                            <Text style={styles.btnTextCardNo}>No</Text>
+                                                        </Pressable>
+                                                    </>
+                                                );
+                                            })()}
                                         </View>
 
                                         <View style={styles.marketCardFooter}>
@@ -780,6 +821,7 @@ function MarketDetailScreen() {
                             onSuccess={handleTradeSuccess}
                             initialSide={initialSide}
                             initialTradeMode={initialTradeMode}
+                            onClose={() => setShowTradePanel(false)}
                         />
                     </Pressable>
                 </Pressable>
@@ -1355,6 +1397,30 @@ const styles = StyleSheet.create({
     btnTextCardNo: {
         color: "#ff3b30",
         fontSize: 16,
+        fontWeight: "700",
+    },
+    btnCardBuy: {
+        height: 48,
+        backgroundColor: "rgba(52, 199, 89, 0.15)",
+        borderRadius: 12,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    btnCardSell: {
+        height: 48,
+        backgroundColor: "rgba(0, 0, 0, 0.05)",
+        borderRadius: 12,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    btnTextCardBuy: {
+        color: "#34c759",
+        fontSize: 14,
+        fontWeight: "700",
+    },
+    btnTextCardSell: {
+        color: "#111827",
+        fontSize: 14,
         fontWeight: "700",
     },
     marketCardFooter: {

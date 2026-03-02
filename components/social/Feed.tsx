@@ -137,6 +137,7 @@ export function Feed({ userId, marketId, ListHeaderComponent: CustomListHeaderCo
                                 onSuccess={handleCloseTrade}
                                 initialSide="YES"
                                 initialTradeMode="BUY"
+                                onClose={handleCloseTrade}
                             />
                         )}
                     </View>

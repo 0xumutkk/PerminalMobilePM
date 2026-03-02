@@ -1,12 +1,21 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { View, Text, StyleSheet, Pressable, Dimensions, Platform } from "react-native";
-import { useTrade, TradeSide, TradeMode } from "../../hooks/useTrade";
-import { useFundSolanaWallet } from "@privy-io/expo/ui";
-import { Market } from "../../lib/mock-data";
 import { Image } from "expo-image";
 import { ChevronDown, Delete } from "lucide-react-native";
+import { useTrade, TradeSide, TradeMode } from "../../hooks/useTrade";
+import { useFundSolanaWallet } from "@privy-io/expo/ui";
+import { usePositions } from "../../hooks/usePositions";
+import { Market } from "../../lib/mock-data";
 import { SwipeToBuy } from "./SwipeToBuy";
 import { getTokenBalance } from "../../lib/solana";
+import Animated, {
+    useSharedValue,
+    useAnimatedStyle,
+    withSpring,
+    runOnJS,
+    withTiming
+} from "react-native-reanimated";
+import { GestureDetector, Gesture } from "react-native-gesture-handler";
 
 interface TradePanelProps {
     market: Market;
@@ -19,10 +28,12 @@ interface TradePanelProps {
     }) => void;
     initialSide?: TradeSide;
     initialTradeMode?: TradeMode;
+    onClose?: () => void;
 }
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const MIN_TRADE_USD = 1.05;
 const PANEL_HEIGHT = SCREEN_HEIGHT * 0.92;
 const CONTENT_HORIZONTAL_PADDING = 12;
 const KEY_HEIGHT = 46;
@@ -34,7 +45,29 @@ export function TradePanel({
     onSuccess,
     initialSide = "YES",
     initialTradeMode = "BUY",
+    onClose,
 }: TradePanelProps) {
+    const translateY = useSharedValue(0);
+
+    const panGesture = Gesture.Pan()
+        .onUpdate((event) => {
+            if (event.translationY > 0) {
+                translateY.value = event.translationY;
+            }
+        })
+        .onEnd((event) => {
+            if (event.translationY > 150 || event.velocityY > 500) {
+                translateY.value = withTiming(SCREEN_HEIGHT, {}, () => {
+                    if (onClose) runOnJS(onClose)();
+                });
+            } else {
+                translateY.value = withSpring(0);
+            }
+        });
+
+    const animatedStyle = useAnimatedStyle(() => ({
+        transform: [{ translateY: translateY.value }],
+    }));
     const {
         buy,
         sell,
@@ -47,6 +80,7 @@ export function TradePanel({
         usdcBalance,
         walletAddress,
     } = useTrade();
+    const { activePositions } = usePositions();
     const { fundWallet } = useFundSolanaWallet();
     const [side, setSide] = useState<TradeSide>(initialSide);
     const [tradeMode, setTradeMode] = useState<TradeMode>(initialTradeMode);
@@ -75,7 +109,16 @@ export function TradePanel({
     useEffect(() => {
         reset();
         setAmount("");
-    }, [tradeMode, reset]);
+
+        // When switching to SELL mode, automatically set the side to what the user owns
+        if (tradeMode === "SELL") {
+            const marketId = market.marketId || market.id;
+            const currentPosition = activePositions.find(p => p.marketId === marketId);
+            if (currentPosition && currentPosition.amount > 0) {
+                setSide(currentPosition.side);
+            }
+        }
+    }, [tradeMode, reset, market.id, activePositions]);
 
     const refreshSideBalance = useCallback(async () => {
         if (!walletAddress) {
@@ -83,7 +126,21 @@ export function TradePanel({
             return;
         }
 
-        // For DFlow/Legacy markets
+        const marketId = market.marketId || market.id;
+        const currentPosition = activePositions.find(p => p.marketId === marketId);
+
+        // If we found a matching position in usePositions, use that value
+        if (currentPosition) {
+            // Check if the current selected side matches the position side
+            if (currentPosition.side === side) {
+                setSideBalance(currentPosition.amount);
+            } else {
+                setSideBalance(0);
+            }
+            return;
+        }
+
+        // Fallback for DFlow/Legacy markets
         if (selectedOutcomeMint) {
             try {
                 const balance = await getTokenBalance(walletAddress, selectedOutcomeMint);
@@ -95,9 +152,8 @@ export function TradePanel({
             }
         }
 
-        // For Jupiter markets, we rely on position data which handles balance mapping via positionPubkey
         setSideBalance(0);
-    }, [walletAddress, selectedOutcomeMint]);
+    }, [walletAddress, selectedOutcomeMint, side, market.id, market.marketId, activePositions]);
 
     useEffect(() => {
         refreshSideBalance();
@@ -107,7 +163,8 @@ export function TradePanel({
     useEffect(() => {
         const numAmount = parseFloat(amount);
         if (isNaN(numAmount) || numAmount < 0.1) return;
-        if (!selectedOutcomeMint) return;
+        // Jupiter markets use market.id as the identifier, DFlow/Legacy use selectedOutcomeMint.
+        if (!selectedOutcomeMint && !market.id) return;
 
         const timeoutId = setTimeout(() => {
             const expectedPrice = side === "YES" ? market.yesPrice : (1 - market.yesPrice);
@@ -120,12 +177,17 @@ export function TradePanel({
                     slippageBps: slippageBps ?? undefined,
                 });
             } else {
+                const marketId = market.marketId || market.id;
+                const currentPosition = activePositions.find(p => p.marketId === marketId);
+                const positionPubkey = currentPosition?.mint;
+
                 getSwapQuote({
                     marketId: market.id,
                     amountTokens: numAmount,
                     side,
                     expectedPrice,
                     slippageBps: slippageBps ?? undefined,
+                    positionPubkey,
                 });
             }
         }, 300);
@@ -140,6 +202,9 @@ export function TradePanel({
         tradeMode,
         getQuote,
         getSwapQuote,
+        activePositions,
+        market.id,
+        market.marketId,
     ]);
 
     const handleKeyPress = useCallback((key: string) => {
@@ -175,9 +240,14 @@ export function TradePanel({
 
     const handleTrade = async () => {
         const numAmount = parseFloat(amount);
-        if (isNaN(numAmount) || numAmount < 0.1) return;
+        const minAmount = tradeMode === "BUY" ? MIN_TRADE_USD : 0.1;
+        if (isNaN(numAmount) || numAmount < minAmount) return;
         // Jupiter markets use marketId, DFlow uses selectedOutcomeMint.
         if (!market.id) return;
+
+        const marketId = market.marketId || market.id;
+        const currentPosition = activePositions.find(p => p.marketId === marketId);
+        const positionPubkey = currentPosition?.mint; // mint stores positionPubkey
 
         const expectedPrice = side === "YES" ? market.yesPrice : (1 - market.yesPrice);
         const signature =
@@ -195,6 +265,7 @@ export function TradePanel({
                     side,
                     slippageBps: slippageBps ?? undefined,
                     expectedPrice,
+                    positionPubkey,
                 });
 
         if (signature && onSuccess) {
@@ -233,14 +304,16 @@ export function TradePanel({
         ? "This market has no tradeable identifier."
         : tradeMode === "SELL" && !hasSellInventory
             ? `No ${side} shares available to sell.`
-            : market.isTradeable === false
-                ? "This market is not tradeable right now."
-                : null;
+            : tradeMode === "BUY" && !!amount && parseFloat(amount) < MIN_TRADE_USD
+                ? `Minimum order is $${MIN_TRADE_USD}.`
+                : market.isTradeable === false
+                    ? "This market is not tradeable right now."
+                    : null;
     const isButtonDisabled =
         isLoading ||
         isInsufficientBalance ||
         !amount ||
-        parseFloat(amount) < 0.1 ||
+        parseFloat(amount) < (tradeMode === "BUY" ? MIN_TRADE_USD : 0.1) ||
         !isMarketTradeable ||
         (tradeMode === "SELL" && !hasSellInventory);
 
@@ -249,8 +322,10 @@ export function TradePanel({
     const currentPrice = side === "YES" ? market.yesPrice : (1 - market.yesPrice);
 
     // Technical Details Calculation from Quote
-    const quotePrice = quote ? parseInt(quote.priceUsd ?? "0", 10) / 1000000 : 0;
-    const quoteContracts = quote ? parseInt(quote.contracts ?? "0", 10) : 0;
+    const orderObj = quote?.order;
+    const quoteContracts = orderObj ? parseInt(orderObj.contracts ?? "0", 10) : 0;
+    const quoteTotalCost = orderObj ? parseInt(orderObj.orderCostUsd ?? "0", 10) / 1_000_000 : 0;
+    const quotePrice = (quoteContracts > 0) ? quoteTotalCost / quoteContracts : 0;
 
     // Execution checks
     const safeCurrentPrice = currentPrice > 0 ? currentPrice : 1;
@@ -289,160 +364,162 @@ export function TradePanel({
     const feedbackMessage = tradeBlockedReason || error;
 
     return (
-        <View style={styles.container}>
-            <View style={styles.dragHandleContainer}>
-                <View style={styles.dragHandle} />
-            </View>
-
-            <View style={styles.content}>
-                {/* Market Header */}
-                <View style={styles.marketHeader}>
-                    <Image source={{ uri: market.imageUrl }} style={styles.marketIcon} />
-                    <Text style={styles.marketTitle} numberOfLines={1}>{market.title}</Text>
+        <GestureDetector gesture={panGesture}>
+            <Animated.View style={[styles.container, animatedStyle]}>
+                <View style={styles.dragHandleContainer}>
+                    <View style={styles.dragHandle} />
                 </View>
 
-                {/* Buy/Sell Toggle */}
-                <View style={styles.toggleWrapper}>
-                    <View style={styles.tradeTypeToggle}>
-                        <Pressable
-                            style={[styles.toggleBtn, tradeMode === "BUY" && styles.toggleBtnActive]}
-                            onPress={() => setTradeMode("BUY")}
-                        >
-                            <Text style={[styles.toggleText, tradeMode === "BUY" && styles.toggleTextActive]}>Buy</Text>
-                        </Pressable>
-                        <Pressable
-                            style={[styles.toggleBtn, tradeMode === "SELL" && styles.toggleBtnActive]}
-                            onPress={() => setTradeMode("SELL")}
-                        >
-                            <Text style={[styles.toggleText, tradeMode === "SELL" && styles.toggleTextActive]}>Sell</Text>
-                        </Pressable>
+                <View style={styles.content}>
+                    {/* Market Header */}
+                    <View style={styles.marketHeader}>
+                        <Image source={{ uri: market.imageUrl }} style={styles.marketIcon} />
+                        <Text style={styles.marketTitle} numberOfLines={1}>{market.title}</Text>
                     </View>
-                </View>
 
-                {/* Main Amount Display */}
-                <View style={styles.amountDisplayContainer}>
-                    <Text style={styles.amountText} numberOfLines={1} adjustsFontSizeToFit>
-                        {tradeMode === "BUY" ? `$${numAmount === 0 ? "0.00" : amount}` : `${numAmount === 0 ? "0.00" : amount}`}
-                    </Text>
-                    {tradeMode === "SELL" && <Text style={styles.amountSuffix}>Shares</Text>}
-                    <Text style={styles.sharesEstimate}>
-                        {tradeMode === "BUY"
-                            ? `≈${primaryValue.toLocaleString(undefined, { maximumFractionDigits: 2 })} Shares`
-                            : `≈$${primaryValue.toLocaleString(undefined, { maximumFractionDigits: 2 })} Proceeds`}
-                    </Text>
-                </View>
-
-                {/* Balance Selector */}
-                <Pressable style={styles.balanceSelector} onPress={tradeMode === "BUY" ? handleFundWallet : undefined}>
-                    <View style={styles.balanceIconBg}>
-                        <Text style={styles.balanceIconText}>$</Text>
-                    </View>
-                    <View style={styles.balanceInfo}>
-                        <Text style={styles.balanceLabel}>{tradeMode === "BUY" ? "Cash Balance" : `${side} Balance`}</Text>
-                        <Text style={styles.balanceValue}>
-                            {tradeMode === "BUY"
-                                ? `$${(usdcBalance ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                                : `${sideBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} shares`}
-                        </Text>
-                    </View>
-                    <ChevronDown color="#999" size={14} />
-                </Pressable>
-
-                {/* Yes/No Selection Pills */}
-                <View style={styles.sidePillsContainer}>
-                    <Pressable
-                        style={[styles.sidePill, side === "YES" ? styles.yesPillActive : styles.pillInactive]}
-                        onPress={() => setSide("YES")}
-                    >
-                        <Text style={[styles.pillText, side === "YES" && styles.pillTextActive]}>
-                            Yes {(market.yesPrice * 100).toFixed(0)}¢
-                        </Text>
-                    </Pressable>
-                    <Pressable
-                        style={[styles.sidePill, side === "NO" ? styles.noPillActive : styles.pillInactive]}
-                        onPress={() => setSide("NO")}
-                    >
-                        <Text style={[styles.pillText, side === "NO" && styles.pillTextActive]}>
-                            No {((1 - market.yesPrice) * 100).toFixed(0)}¢
-                        </Text>
-                    </Pressable>
-                </View>
-
-                {/* Potential Win Display */}
-                <View style={styles.toWinContainer}>
-                    <Text style={styles.toWinLabel}>{tradeMode === "BUY" ? "To Win" : "To Receive"}</Text>
-                    <Text style={styles.toWinValue}>
-                        ${primaryValueFormatted}
-                    </Text>
-                </View>
-
-                {/* Technical Details Accordion */}
-                <Pressable
-                    style={styles.detailsHeader}
-                    onPress={() => setShowDetails(!showDetails)}
-                >
-                    <Text style={styles.detailsHeaderText}>Order Details</Text>
-                    <ChevronDown color="#999" size={16} style={{ transform: [{ rotate: showDetails ? "180deg" : "0deg" }] }} />
-                </Pressable>
-
-                {showDetails && (
-                    <View style={styles.detailsContent}>
-                        <View style={styles.detailRow}>
-                            <Text style={styles.detailLabel}>Execution Price</Text>
-                            <Text style={styles.detailValue}>{(executionPrice * 100).toFixed(2)}¢</Text>
+                    {/* Buy/Sell Toggle */}
+                    <View style={styles.toggleWrapper}>
+                        <View style={styles.tradeTypeToggle}>
+                            <Pressable
+                                style={[styles.toggleBtn, tradeMode === "BUY" && styles.toggleBtnActive]}
+                                onPress={() => setTradeMode("BUY")}
+                            >
+                                <Text style={[styles.toggleText, tradeMode === "BUY" && styles.toggleTextActive]}>Buy</Text>
+                            </Pressable>
+                            <Pressable
+                                style={[styles.toggleBtn, tradeMode === "SELL" && styles.toggleBtnActive]}
+                                onPress={() => setTradeMode("SELL")}
+                            >
+                                <Text style={[styles.toggleText, tradeMode === "SELL" && styles.toggleTextActive]}>Sell</Text>
+                            </Pressable>
                         </View>
-                        <View style={styles.detailRow}>
-                            <Text style={styles.detailLabel}>Price Impact</Text>
-                            <Text style={[styles.detailValue, priceImpactPct > 5 ? styles.warningText : {}]}>
-                                {priceImpactPct > 0.01 ? `${priceImpactPct.toFixed(2)}%` : "< 0.01%"}
+                    </View>
+
+                    {/* Main Amount Display */}
+                    <View style={styles.amountDisplayContainer}>
+                        <Text style={styles.amountText} numberOfLines={1} adjustsFontSizeToFit>
+                            {tradeMode === "BUY" ? `$${numAmount === 0 ? "0.00" : amount}` : `${numAmount === 0 ? "0.00" : amount}`}
+                        </Text>
+                        {tradeMode === "SELL" && <Text style={styles.amountSuffix}>Shares</Text>}
+                        <Text style={styles.sharesEstimate}>
+                            {tradeMode === "BUY"
+                                ? `≈${primaryValue.toLocaleString(undefined, { maximumFractionDigits: 2 })} Shares`
+                                : `≈$${primaryValue.toLocaleString(undefined, { maximumFractionDigits: 2 })} Proceeds`}
+                        </Text>
+                    </View>
+
+                    {/* Balance Selector */}
+                    <Pressable style={styles.balanceSelector} onPress={tradeMode === "BUY" ? handleFundWallet : undefined}>
+                        <View style={styles.balanceIconBg}>
+                            <Text style={styles.balanceIconText}>$</Text>
+                        </View>
+                        <View style={styles.balanceInfo}>
+                            <Text style={styles.balanceLabel}>{tradeMode === "BUY" ? "USD Balance" : `${side} Balance`}</Text>
+                            <Text style={styles.balanceValue}>
+                                {tradeMode === "BUY"
+                                    ? `$${(usdcBalance ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                                    : `${sideBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} shares`}
                             </Text>
                         </View>
-                    </View>
-                )}
+                        <ChevronDown color="#999" size={14} />
+                    </Pressable>
 
-                {/* Quick Amounts */}
-                <View style={styles.quickAmountsRow}>
-                    {quickButtons.map((val) => (
-                        <Pressable key={val} style={styles.quickBtn} onPress={() => handleQuickAmount(val)}>
-                            <Text style={styles.quickBtnText}>{val}</Text>
+                    {/* Yes/No Selection Pills */}
+                    <View style={styles.sidePillsContainer}>
+                        <Pressable
+                            style={[styles.sidePill, side === "YES" ? styles.yesPillActive : styles.pillInactive]}
+                            onPress={() => setSide("YES")}
+                        >
+                            <Text style={[styles.pillText, side === "YES" && styles.pillTextActive]}>
+                                Yes {(market.yesPrice * 100).toFixed(0)}¢
+                            </Text>
                         </Pressable>
-                    ))}
-                </View>
+                        <Pressable
+                            style={[styles.sidePill, side === "NO" ? styles.noPillActive : styles.pillInactive]}
+                            onPress={() => setSide("NO")}
+                        >
+                            <Text style={[styles.pillText, side === "NO" && styles.pillTextActive]}>
+                                No {((1 - market.yesPrice) * 100).toFixed(0)}¢
+                            </Text>
+                        </Pressable>
+                    </View>
 
-                {/* Numeric Keypad */}
-                <View style={styles.keypad}>
-                    {[["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], [".", "0", "backspace"]].map((row, i) => (
-                        <View key={i} style={styles.keypadRow}>
-                            {row.map((key) => (
-                                <Pressable
-                                    key={key}
-                                    style={[styles.key, (key === "backspace" || key === ".") && styles.keySpecial]}
-                                    onPress={() => handleKeyPress(key)}
-                                >
-                                    {key === "backspace" ? (
-                                        <Delete color="#000" size={20} />
-                                    ) : (
-                                        <Text style={styles.keyText}>{key}</Text>
-                                    )}
-                                </Pressable>
-                            ))}
+                    {/* Potential Win Display */}
+                    <View style={styles.toWinContainer}>
+                        <Text style={styles.toWinLabel}>{tradeMode === "BUY" ? "To Win" : "To Receive"}</Text>
+                        <Text style={styles.toWinValue}>
+                            ${primaryValueFormatted}
+                        </Text>
+                    </View>
+
+                    {/* Technical Details Accordion */}
+                    <Pressable
+                        style={styles.detailsHeader}
+                        onPress={() => setShowDetails(!showDetails)}
+                    >
+                        <Text style={styles.detailsHeaderText}>Order Details</Text>
+                        <ChevronDown color="#999" size={16} style={{ transform: [{ rotate: showDetails ? "180deg" : "0deg" }] }} />
+                    </Pressable>
+
+                    {showDetails && (
+                        <View style={styles.detailsContent}>
+                            <View style={styles.detailRow}>
+                                <Text style={styles.detailLabel}>Execution Price</Text>
+                                <Text style={styles.detailValue}>{(executionPrice * 100).toFixed(2)}¢</Text>
+                            </View>
+                            <View style={styles.detailRow}>
+                                <Text style={styles.detailLabel}>Price Impact</Text>
+                                <Text style={[styles.detailValue, priceImpactPct > 5 ? styles.warningText : {}]}>
+                                    {priceImpactPct > 0.01 ? `${priceImpactPct.toFixed(2)}%` : "< 0.01%"}
+                                </Text>
+                            </View>
                         </View>
-                    ))}
+                    )}
+
+                    {/* Quick Amounts */}
+                    <View style={styles.quickAmountsRow}>
+                        {quickButtons.map((val) => (
+                            <Pressable key={val} style={styles.quickBtn} onPress={() => handleQuickAmount(val)}>
+                                <Text style={styles.quickBtnText}>{val}</Text>
+                            </Pressable>
+                        ))}
+                    </View>
+
+                    {/* Numeric Keypad */}
+                    <View style={styles.keypad}>
+                        {[["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], [".", "0", "backspace"]].map((row, i) => (
+                            <View key={i} style={styles.keypadRow}>
+                                {row.map((key) => (
+                                    <Pressable
+                                        key={key}
+                                        style={[styles.key, (key === "backspace" || key === ".") && styles.keySpecial]}
+                                        onPress={() => handleKeyPress(key)}
+                                    >
+                                        {key === "backspace" ? (
+                                            <Delete color="#000" size={20} />
+                                        ) : (
+                                            <Text style={styles.keyText}>{key}</Text>
+                                        )}
+                                    </Pressable>
+                                ))}
+                            </View>
+                        ))}
+                    </View>
                 </View>
-            </View>
 
-            {/* Sticky Swipe Action Footer */}
-            <View style={styles.actionFixedFooter}>
-                <SwipeToBuy
-                    onSwipe={handleTrade}
-                    isLoading={isLoading}
-                    disabled={isButtonDisabled}
-                    label={swipeLabel}
-                />
-            </View>
+                {/* Sticky Swipe Action Footer */}
+                <View style={styles.actionFixedFooter}>
+                    <SwipeToBuy
+                        onSwipe={handleTrade}
+                        isLoading={isLoading}
+                        disabled={isButtonDisabled}
+                        label={swipeLabel}
+                    />
+                </View>
 
-            {!!feedbackMessage && <Text style={styles.errorFeedback}>{feedbackMessage}</Text>}
-        </View>
+                {!!feedbackMessage && <Text style={styles.errorFeedback}>{feedbackMessage}</Text>}
+            </Animated.View>
+        </GestureDetector>
     );
 }
 

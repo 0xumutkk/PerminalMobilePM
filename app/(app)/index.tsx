@@ -368,14 +368,24 @@ export default function HomeFeed() {
 
     const loadMarkets = useCallback(async () => {
         const seq = ++marketLoadSeq.current;
+        console.log(`[HomeFeed] loadMarkets started (seq=${seq})`);
         setMarketsLoading(true);
         setMarketsError(null);
         try {
-            const [{ markets: list, categories: feedCategories, nextCursor: initialCursor }, tagsByCategories] = await Promise.all([
-                // Reduce limit from 500 to 250 for faster initial load
-                fetchMarketsForApp({ limit: 250, sort: "volume" }),
-                fetchJupiterTagsByCategories().catch(() => ({})),
+            console.log(`[HomeFeed] Fetching markets and tags...`);
+            const [marketsRes, tagsByCategories] = await Promise.all([
+                fetchMarketsForApp({ limit: 250, sort: "volume" }).catch(err => {
+                    console.error("[HomeFeed] fetchMarketsForApp failed:", err);
+                    return { markets: [], categories: [], nextCursor: null };
+                }),
+                fetchJupiterTagsByCategories().catch(err => {
+                    console.error("[HomeFeed] fetchJupiterTagsByCategories failed:", err);
+                    return {};
+                }),
             ]);
+
+            const { markets: list, categories: feedCategories, nextCursor: initialCursor } = marketsRes;
+            console.log(`[HomeFeed] Fetch completed: ${list.length} markets, ${Object.keys(tagsByCategories).length} tags categories`);
             setNextCursor(initialCursor);
 
             const docCategoryOrder = Object.keys(tagsByCategories ?? {})
@@ -395,35 +405,9 @@ export default function HomeFeed() {
                 .filter((market) => isTradeableMarket(market));
             const volumeEligibleMarkets = notEndedTradeableMarkets.filter((market) => hasVolume(market));
 
-            if (__DEV__) {
-                console.log(
-                    `[Home] Markets fetched=${list.length}, notEnded=${notEndedMarkets.length}, tradeableNotEnded=${notEndedTradeableMarkets.length}, volumeEligible=${volumeEligibleMarkets.length}`
-                );
-                const categoryCounts = new Map<string, number>();
-                for (const market of notEndedMarkets) {
-                    const category = getMarketCategory(market);
-                    if (!category || category === "Other") continue;
-                    categoryCounts.set(category, (categoryCounts.get(category) ?? 0) + 1);
-                }
-                const categorySummary = Array.from(categoryCounts.entries())
-                    .sort((a, b) => b[1] - a[1])
-                    .map(([category, count]) => `${category}:${count}`)
-                    .join(", ");
-                console.log(
-                    `[Home] Active categories=${categoryCounts.size}${categorySummary ? ` -> ${categorySummary}` : ""}`
-                );
-                const strict15mCount = list.filter((market) => is15MinuteMarket(market)).length;
-                const strict15mTradeableCount = list
-                    .filter((market) => is15MinuteMarket(market))
-                    .filter((market) => isTradeableMarket(market)).length;
-                const zeroX01Count = list.filter((market) => hasZeroX01Signal(market)).length;
-                const zeroX01TradeableCount = list
-                    .filter((market) => hasZeroX01Signal(market))
-                    .filter((market) => isTradeableMarket(market)).length;
-                console.log(
-                    `[Home] 15Min candidates strict=${strict15mCount}, strictTradeable=${strict15mTradeableCount}, zeroX01=${zeroX01Count}, zeroX01Tradeable=${zeroX01TradeableCount}`
-                );
-            }
+            console.log(
+                `[HomeFeed] Processed stats: fetched=${list.length}, remainingNotEnded=${notEndedMarkets.length}, volumeEligible=${volumeEligibleMarkets.length}`
+            );
 
             const uniqueMarketCategories = new Map<string, string>();
             for (const market of notEndedMarkets) {
@@ -452,10 +436,12 @@ export default function HomeFeed() {
                 .map(([, value]) => value);
 
             if (seq === marketLoadSeq.current) {
+                console.log(`[HomeFeed] Setting markets state (seq=${seq})`);
                 setMarkets(list);
                 setCategories(orderedCategories);
             }
         } catch (e) {
+            console.error("[HomeFeed] loadMarkets top-level error:", e);
             if (seq === marketLoadSeq.current) {
                 setMarketsError(e instanceof Error ? e.message : "Failed to load markets");
                 setMarkets([]);
@@ -463,6 +449,7 @@ export default function HomeFeed() {
             }
         } finally {
             if (seq === marketLoadSeq.current) {
+                console.log(`[HomeFeed] loadMarkets finally (seq=${seq})`);
                 setMarketsLoading(false);
             }
         }
@@ -529,13 +516,24 @@ export default function HomeFeed() {
 
     const navigation = useNavigation();
     useEffect(() => {
-        const unsubscribe = navigation.addListener('tabPress' as any, (e: any) => {
+        // Handle initial load and tab switches
+        const unsubscribeFocus = navigation.addListener('focus', () => {
+            loadMarkets();
+            loadBalances();
+        });
+
+        // Handle explicit tab taps (refresh when already on page)
+        const unsubscribeTabPress = navigation.addListener('tabPress' as any, (e: any) => {
             if (navigation.isFocused()) {
                 onRefresh();
             }
         });
-        return unsubscribe;
-    }, [navigation, onRefresh]);
+
+        return () => {
+            unsubscribeFocus();
+            unsubscribeTabPress();
+        };
+    }, [navigation, loadMarkets, loadBalances, onRefresh]);
 
     useEffect(() => {
         const id = setInterval(() => setListNowMs(Date.now()), 60_000);
@@ -922,13 +920,18 @@ export default function HomeFeed() {
                     ) : <View style={{ height: 40 }} />
                 )}
                 ListEmptyComponent={
-                    !marketsLoading ? (
+                    marketsLoading ? (
+                        <View style={styles.loadingContainer}>
+                            <ActivityIndicator size="large" color="#3b82f7" />
+                            <Text style={styles.loadingText}>Loading markets...</Text>
+                        </View>
+                    ) : (
                         <View style={styles.emptyMarkets}>
                             <Text style={styles.emptyMarketsText}>
                                 {marketsError ?? "No markets available."}
                             </Text>
                         </View>
-                    ) : null
+                    )
                 }
             />
 
@@ -989,6 +992,7 @@ export default function HomeFeed() {
                                 market={tradingMarket}
                                 onSuccess={handleTradeSuccess}
                                 initialSide={selectedSide}
+                                onClose={() => setShowTradePanel(false)}
                             />
                         )}
                     </Pressable>
@@ -1198,6 +1202,17 @@ const styles = StyleSheet.create({
         paddingVertical: 32,
         alignItems: "center",
         justifyContent: "center",
+    },
+    loadingContainer: {
+        paddingVertical: 60,
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 12,
+    },
+    loadingText: {
+        color: "#8d8d8d",
+        fontSize: 15,
+        fontWeight: "500",
     },
     emptyMarkets: {
         paddingVertical: 40,

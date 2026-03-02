@@ -29,13 +29,22 @@ export default function ExploreScreen() {
   }, [router]);
 
   useEffect(() => {
-    const unsubscribe = navigation.addListener('tabPress' as any, (e: any) => {
+    // Refresh when landing on the page
+    const unsubscribeFocus = navigation.addListener('focus', () => {
+      setRefreshKey(prev => prev + 1);
+    });
+
+    // Refresh when tapping the tab icon while already focused
+    const unsubscribeTabPress = navigation.addListener('tabPress' as any, (e: any) => {
       if (navigation.isFocused()) {
         setRefreshKey(prev => prev + 1);
       }
     });
 
-    return unsubscribe;
+    return () => {
+      unsubscribeFocus();
+      unsubscribeTabPress();
+    };
   }, [navigation]);
 
   React.useEffect(() => {
