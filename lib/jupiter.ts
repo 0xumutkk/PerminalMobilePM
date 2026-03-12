@@ -40,6 +40,27 @@ const JUPITER_PROVIDERS: JupiterProvider[] = ["polymarket"];
 const EVENTS_PAGE_SIZE = 50;
 const MAX_PROVIDER_PAGES = 20; // Increase depth to find more markets
 const KALSHI_MARKET_PREFIX = /^KX/i;
+const JUPITER_RATE_LIMIT_COOLDOWN_MS = 20 * 1000;
+const MARKETS_RESPONSE_TTL_MS = 10 * 1000;
+let jupiterRateLimitedUntil = 0;
+let lastRateLimitWarningAt = 0;
+const inFlightEventRequests = new Map<string, Promise<{
+    events: JupiterEvent[];
+    nextCursor: string | null;
+    pagination: { start: number; end: number; total: number; hasNext: boolean } | null;
+    rateLimited?: boolean;
+}>>();
+const marketsResponseCache = new Map<string, {
+    expiresAt: number;
+    value: { markets: Market[]; categories: string[]; nextCursor: string | null };
+}>();
+const inFlightMarketsRequests = new Map<string, Promise<{ markets: Market[]; categories: string[]; nextCursor: string | null }>>();
+
+function buildMarketCategories(markets: Market[]): string[] {
+    return [...new Set(markets.map((market) => market.category))]
+        .filter((category) => category !== "Other")
+        .sort((a, b) => a.localeCompare(b));
+}
 
 function isPolymarketEvent(event: JupiterEvent): boolean {
     const provider = String(event.provider ?? "").toLowerCase();
@@ -110,6 +131,30 @@ function getMarketSortScore(
     if (sort === "volume24h") return Math.max(volume24h, volume);
     if (sort === "liquidity") return Math.max(liquidity, volume24h, volume);
     return Math.max(volume, volume24h);
+}
+
+function hasExecutableQuote(jupMarket: JupiterMarket): boolean {
+    const quotes = [
+        jupMarket.pricing?.buyYesPriceUsd,
+        jupMarket.pricing?.sellYesPriceUsd,
+        jupMarket.pricing?.buyNoPriceUsd,
+        jupMarket.pricing?.sellNoPriceUsd,
+    ]
+        .map((value) => microUsdToProbability(value))
+        .filter((value) => Number.isFinite(value));
+
+    return quotes.some((value) => (value as number) > 0 && (value as number) < 1);
+}
+
+function hasMarketLiquiditySignal(jupMarket: JupiterMarket): boolean {
+    const liquidityDollars = coerceNumber(jupMarket.pricing?.liquidityDollars) ?? 0;
+    const notionalValueDollars = coerceNumber(jupMarket.pricing?.notionalValueDollars) ?? 0;
+    return liquidityDollars > 0 || notionalValueDollars > 0;
+}
+
+function shouldIncludeJupiterMarketInUi(jupMarket: JupiterMarket): boolean {
+    if (jupMarket.status !== "open") return false;
+    return hasExecutableQuote(jupMarket) || hasMarketLiquiditySignal(jupMarket);
 }
 
 // ─── Category Management ────────────────────────────────────────
@@ -303,9 +348,10 @@ export function jupiterEventToMarkets(event: JupiterEvent): Market[] {
     // Jupiter's events usually have one or more markets.
     // In multi-choice events, there are multiple markets, each with isYes: true/false.
     // Each YES market represents a specific outcome we want to display.
-    const yesMarkets = event.markets.filter(m => m.isYes !== false); // fallback to true/undefined
+    const yesMarkets = event.markets.filter((market) => market.isYes !== false); // fallback to true/undefined
 
     for (const jupMarket of yesMarkets) {
+        if (!shouldIncludeJupiterMarketInUi(jupMarket)) continue;
         // Attempt to find the matching NO market if this is a binary-looking setup
         // Often matched by some metadata or just being the only non-yes market.
         // For multi-choice, people usually trade YES on the candidate.
@@ -315,7 +361,10 @@ export function jupiterEventToMarkets(event: JupiterEvent): Market[] {
 
     // If no YES markets found, just return the first one as fallback
     if (results.length === 0 && event.markets.length > 0) {
-        results.push(jupiterEventMarketToAppMarket(event, event.markets[0]));
+        const fallbackMarket = event.markets.find((market) => shouldIncludeJupiterMarketInUi(market));
+        if (fallbackMarket) {
+            results.push(jupiterEventMarketToAppMarket(event, fallbackMarket));
+        }
     }
 
     return results;
@@ -345,7 +394,12 @@ export async function fetchJupiterEvents(params?: {
     events: JupiterEvent[];
     nextCursor: string | null;
     pagination: { start: number; end: number; total: number; hasNext: boolean } | null;
+    rateLimited?: boolean;
 }> {
+    if (Date.now() < jupiterRateLimitedUntil) {
+        return { events: [], nextCursor: null, pagination: null, rateLimited: true };
+    }
+
     const url = new URL(`${JUPITER_BASE_URL}/events`);
 
     const parsedCursorWindow = (() => {
@@ -375,76 +429,100 @@ export async function fetchJupiterEvents(params?: {
             url.searchParams.set("filter", params.filter);
         }
     }
+    const requestKey = url.toString();
+    const existingRequest = inFlightEventRequests.get(requestKey);
+    if (existingRequest) {
+        return existingRequest;
+    }
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
+    const requestPromise = (async () => {
+        try {
+            const res = await fetch(url.toString(), {
+                headers: getHeaders(),
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
 
-    try {
-        const res = await fetch(url.toString(), {
-            headers: getHeaders(),
-            signal: controller.signal
-        });
-        clearTimeout(timeoutId);
+            if (!res.ok) {
+                if (res.status === 403 || res.status === 401) {
+                    console.warn("[Jupiter] API auth error:", res.status, "- check EXPO_PUBLIC_JUPITER_API_KEY");
+                    return { events: [], nextCursor: null, pagination: null };
+                }
+                if (res.status === 429) {
+                    const retryAfterHeader = Number(res.headers.get("retry-after"));
+                    const retryAfterMs =
+                        Number.isFinite(retryAfterHeader) && retryAfterHeader > 0
+                            ? retryAfterHeader * 1000
+                            : JUPITER_RATE_LIMIT_COOLDOWN_MS;
+                    jupiterRateLimitedUntil = Date.now() + retryAfterMs;
 
-        if (!res.ok) {
-            if (res.status === 403 || res.status === 401) {
-                console.warn("[Jupiter] API auth error:", res.status, "- check EXPO_PUBLIC_JUPITER_API_KEY");
-                return { events: [], nextCursor: null, pagination: null };
+                    if (Date.now() - lastRateLimitWarningAt > 5_000) {
+                        console.warn(`[Jupiter] API rate limited (429). Cooling down for ${Math.ceil(retryAfterMs / 1000)}s`);
+                        lastRateLimitWarningAt = Date.now();
+                    }
+                    return { events: [], nextCursor: null, pagination: null, rateLimited: true };
+                }
+                if (res.status === 400) {
+                    const text = await res.text().catch(() => "");
+                    console.warn(`[Jupiter] Events API returned 400: ${url.toString()} -> ${text}`);
+                    return { events: [], nextCursor: null, pagination: null };
+                }
+                if (res.status >= 500) {
+                    console.warn(`[Jupiter] Events API returned ${res.status}, skipping`);
+                    return { events: [], nextCursor: null, pagination: null };
+                }
+                throw new Error(`Jupiter events: ${res.status}`);
             }
-            if (res.status === 429) {
-                console.warn("[Jupiter] API rate limited (429)");
-                return { events: [], nextCursor: null, pagination: null };
-            }
-            if (res.status === 400) {
-                const text = await res.text().catch(() => "");
-                console.warn(`[Jupiter] Events API returned 400: ${url.toString()} -> ${text}`);
-                return { events: [], nextCursor: null, pagination: null };
-            }
-            if (res.status >= 500) {
-                console.warn(`[Jupiter] Events API returned ${res.status}, skipping`);
-                return { events: [], nextCursor: null, pagination: null };
-            }
-            throw new Error(`Jupiter events: ${res.status}`);
-        }
-        const data = (await res.json()) as JupiterEventsResponse;
-        const rawPagination = data.pagination;
 
-        const pagination = rawPagination
-            ? {
-                start: coerceNumber(rawPagination.start) ?? start,
-                end: coerceNumber(rawPagination.end) ?? end,
-                total: coerceNumber(rawPagination.total) ?? 0,
-                hasNext: Boolean(rawPagination.hasNext),
-            }
-            : null;
+            jupiterRateLimitedUntil = 0;
+            const data = (await res.json()) as JupiterEventsResponse;
+            const rawPagination = data.pagination;
 
-        let nextCursor = data.nextCursor ?? null;
-        if (!nextCursor && pagination?.hasNext) {
-            const nextStart = pagination.end + 1;
-            const pageSize = Math.max(1, pagination.end - pagination.start + 1);
+            const pagination = rawPagination
+                ? {
+                    start: coerceNumber(rawPagination.start) ?? start,
+                    end: coerceNumber(rawPagination.end) ?? end,
+                    total: coerceNumber(rawPagination.total) ?? 0,
+                    hasNext: Boolean(rawPagination.hasNext),
+                }
+                : null;
 
-            if (pagination.total === 0 || nextStart < pagination.total) {
-                const upperBound = pagination.total > 0 ? pagination.total - 1 : nextStart + pageSize - 1;
-                const nextEnd = Math.min(upperBound, nextStart + pageSize - 1);
-                if (nextStart <= nextEnd) {
-                    nextCursor = `${nextStart}:${nextEnd}`;
+            let nextCursor = data.nextCursor ?? null;
+            if (!nextCursor && pagination?.hasNext) {
+                const nextStart = pagination.end + 1;
+                const pageSize = Math.max(1, pagination.end - pagination.start + 1);
+
+                if (pagination.total === 0 || nextStart < pagination.total) {
+                    const upperBound = pagination.total > 0 ? pagination.total - 1 : nextStart + pageSize - 1;
+                    const nextEnd = Math.min(upperBound, nextStart + pageSize - 1);
+                    if (nextStart <= nextEnd) {
+                        nextCursor = `${nextStart}:${nextEnd}`;
+                    }
                 }
             }
-        }
 
-        return {
-            events: data.data ?? [],
-            nextCursor,
-            pagination,
-        };
-    } catch (error) {
-        clearTimeout(timeoutId);
-        if (error instanceof Error && error.name === "AbortError") {
-            console.warn(`[Jupiter] fetchJupiterEvents timeout after 15s: ${url.toString()}`);
-        } else {
-            console.warn("[Jupiter] fetchJupiterEvents error:", error instanceof Error ? error.message : error);
+            return {
+                events: data.data ?? [],
+                nextCursor,
+                pagination,
+            };
+        } catch (error) {
+            clearTimeout(timeoutId);
+            if (error instanceof Error && error.name === "AbortError") {
+                console.warn(`[Jupiter] fetchJupiterEvents timeout after 15s: ${url.toString()}`);
+            } else {
+                console.warn("[Jupiter] fetchJupiterEvents error:", error instanceof Error ? error.message : error);
+            }
+            return { events: [], nextCursor: null, pagination: null };
+        } finally {
+            inFlightEventRequests.delete(requestKey);
         }
-        return { events: [], nextCursor: null, pagination: null };
-    }
+    })();
+
+    inFlightEventRequests.set(requestKey, requestPromise);
+    return requestPromise;
 }
 
 /**
@@ -560,38 +638,110 @@ export async function fetchMarketsForApp(params?: {
     filter?: "live" | "trending" | "new";
     cursor?: string; // Format: "provider1_start:provider2_start"
 }): Promise<{ markets: Market[]; categories: string[]; nextCursor: string | null }> {
-    const targetPageSize = params?.limit ?? EVENTS_PAGE_SIZE;
-    const allMarkets: Market[] = [];
-    const seenEventIds = new Set<string>();
-    const seenMarketIds = new Set<string>();
+    const requestKey = JSON.stringify({
+        limit: params?.limit ?? EVENTS_PAGE_SIZE,
+        sort: params?.sort ?? "volume",
+        filter: params?.filter ?? "",
+        cursor: params?.cursor ?? "",
+    });
+    const cachedResponse = marketsResponseCache.get(requestKey);
+    if (cachedResponse && cachedResponse.expiresAt > Date.now()) {
+        return cachedResponse.value;
+    }
 
-    const sortPreference = params?.sort ?? "volume";
+    const inFlightRequest = inFlightMarketsRequests.get(requestKey);
+    if (inFlightRequest) {
+        return inFlightRequest;
+    }
 
-    // Parse cursors for each provider
-    const cursors = (params?.cursor || "1:1").split(":");
-    const nextCursors: number[] = [];
+    const requestPromise = (async () => {
+        const targetPageSize = params?.limit ?? EVENTS_PAGE_SIZE;
+        const allMarkets: Market[] = [];
+        const seenEventIds = new Set<string>();
+        const seenMarketIds = new Set<string>();
+        let hitRateLimit = false;
 
-    for (let i = 0; i < JUPITER_PROVIDERS.length; i++) {
-        const provider = JUPITER_PROVIDERS[i];
-        let currentStart = parseInt(cursors[i] || "1", 10);
-        let itemsFetchedSoFar = 0;
-        let isDone = false;
-        let lastCursorNext = currentStart;
+        const sortPreference = params?.sort ?? "volume";
 
-        // Calculate how many pages we need to fetch in parallel for the initial batch
-        // Reduce from 5 (if limit=250) to 2 max for faster initial load and better stability
-        const initialPagesToFetch = Math.min(
-            2,
-            Math.ceil(targetPageSize / EVENTS_PAGE_SIZE)
-        );
+        // Parse cursors for each provider
+        const cursors = (params?.cursor || "1:1").split(":");
+        const nextCursors: number[] = [];
 
-        // Fetch first batch of pages in parallel
-        const firstBatchRequests = [];
-        for (let p = 0; p < initialPagesToFetch; p++) {
-            const pageStart = currentStart + p * EVENTS_PAGE_SIZE;
-            const pageEnd = pageStart + EVENTS_PAGE_SIZE - 1;
-            firstBatchRequests.push(
-                fetchJupiterEvents({
+        for (let i = 0; i < JUPITER_PROVIDERS.length; i++) {
+            const provider = JUPITER_PROVIDERS[i];
+            let currentStart = parseInt(cursors[i] || "1", 10);
+            let itemsFetchedSoFar = 0;
+            let isDone = false;
+            let lastCursorNext = currentStart;
+
+            // Reduce initial fan-out to keep first paint stable.
+            const initialPagesToFetch = Math.min(
+                2,
+                Math.ceil(targetPageSize / EVENTS_PAGE_SIZE)
+            );
+
+            const firstBatchRequests = [];
+            for (let p = 0; p < initialPagesToFetch; p++) {
+                const pageStart = currentStart + p * EVENTS_PAGE_SIZE;
+                const pageEnd = pageStart + EVENTS_PAGE_SIZE - 1;
+                firstBatchRequests.push(
+                    fetchJupiterEvents({
+                        provider,
+                        start: pageStart,
+                        end: pageEnd,
+                        includeMarkets: true,
+                        sortBy: "volume",
+                        sortDirection: "desc",
+                        filter: params?.filter,
+                    })
+                );
+            }
+
+            const firstBatchResults = await Promise.all(firstBatchRequests);
+
+            const processResult = (events: JupiterEvent[], pagination: any) => {
+                if (!events || events.length === 0) return;
+                itemsFetchedSoFar += events.length;
+                for (const event of events) {
+                    if (!isPolymarketEvent(event)) continue;
+                    const eventKey = buildEventDedupeKey(event, provider);
+                    if (seenEventIds.has(eventKey)) continue;
+
+                    const markets = jupiterEventToMarkets(event);
+                    if (markets.length === 0) continue;
+
+                    seenEventIds.add(eventKey);
+                    for (const m of markets) {
+                        if (isLikelyKalshiMarketId(m.marketId || m.id)) continue;
+                        const marketKey = `${provider}:${m.id}`;
+                        if (seenMarketIds.has(marketKey)) continue;
+                        seenMarketIds.add(marketKey);
+                        allMarkets.push(m);
+                    }
+                }
+                if (pagination && pagination.end) {
+                    lastCursorNext = Math.max(lastCursorNext, pagination.end + 1);
+                }
+                if (pagination && !pagination.hasNext) {
+                    isDone = true;
+                }
+            };
+
+            for (const res of firstBatchResults) {
+                if (res.rateLimited) {
+                    hitRateLimit = true;
+                    isDone = true;
+                    lastCursorNext = -1;
+                    break;
+                }
+                processResult(res.events, res.pagination);
+            }
+
+            const totalPagesRequested = Math.ceil(targetPageSize / EVENTS_PAGE_SIZE);
+            for (let p = initialPagesToFetch; p < totalPagesRequested && !isDone && itemsFetchedSoFar < targetPageSize; p++) {
+                const pageStart = currentStart + p * EVENTS_PAGE_SIZE;
+                const pageEnd = pageStart + EVENTS_PAGE_SIZE - 1;
+                const res = await fetchJupiterEvents({
                     provider,
                     start: pageStart,
                     end: pageEnd,
@@ -599,76 +749,66 @@ export async function fetchMarketsForApp(params?: {
                     sortBy: "volume",
                     sortDirection: "desc",
                     filter: params?.filter,
-                })
-            );
+                });
+                if (res.rateLimited) {
+                    hitRateLimit = true;
+                    isDone = true;
+                    lastCursorNext = -1;
+                    break;
+                }
+                processResult(res.events, res.pagination);
+            }
+
+            if (isDone) lastCursorNext = -1;
+            nextCursors.push(lastCursorNext);
         }
 
-        const firstBatchResults = await Promise.all(firstBatchRequests);
+        const hasMore = nextCursors.some((cursor) => cursor !== -1);
+        const nextCursor = hasMore ? nextCursors.map((cursor) => (cursor === -1 ? "DONE" : cursor)).join(":") : null;
 
-        const processResult = (events: JupiterEvent[], pagination: any) => {
-            if (!events || events.length === 0) return;
-            itemsFetchedSoFar += events.length;
-            for (const event of events) {
-                if (!isPolymarketEvent(event)) continue;
-                const eventKey = buildEventDedupeKey(event, provider);
-                if (seenEventIds.has(eventKey)) continue;
+        allMarkets.sort((a, b) => getMarketSortScore(b, sortPreference) - getMarketSortScore(a, sortPreference));
 
-                const markets = jupiterEventToMarkets(event);
-                if (markets.length === 0) continue;
+        if (allMarkets.length === 0) {
+            if (cachedResponse?.value.markets?.length) {
+                console.warn("[Jupiter] Returning stale markets cache after empty/rate-limited fetch");
+                return cachedResponse.value;
+            }
 
-                seenEventIds.add(eventKey);
-                for (const m of markets) {
-                    if (isLikelyKalshiMarketId(m.marketId || m.id)) continue;
-                    const marketKey = `${provider}:${m.id}`;
-                    if (seenMarketIds.has(marketKey)) continue;
-                    seenMarketIds.add(marketKey);
-                    allMarkets.push(m);
-                }
+            if (!params?.cursor && cachedHomeBaseMarkets?.length) {
+                console.warn("[Jupiter] Returning stale home markets after empty/rate-limited fetch");
+                return {
+                    markets: cachedHomeBaseMarkets,
+                    categories: buildMarketCategories(cachedHomeBaseMarkets),
+                    nextCursor: null,
+                };
             }
-            if (pagination && pagination.end) {
-                lastCursorNext = Math.max(lastCursorNext, pagination.end + 1);
-            }
-            if (pagination && !pagination.hasNext) {
-                isDone = true;
-            }
+        }
+
+        const result = {
+            markets: allMarkets,
+            categories: buildMarketCategories(allMarkets),
+            nextCursor,
         };
 
-        for (const res of firstBatchResults) {
-            processResult(res.events, res.pagination);
-        }
-
-        // Fetch remaining pages one by one to avoid rate limiting or connection instability
-        const totalPagesRequested = Math.ceil(targetPageSize / EVENTS_PAGE_SIZE);
-        for (let p = initialPagesToFetch; p < totalPagesRequested && !isDone && itemsFetchedSoFar < targetPageSize; p++) {
-            const pageStart = currentStart + p * EVENTS_PAGE_SIZE;
-            const pageEnd = pageStart + EVENTS_PAGE_SIZE - 1;
-            const res = await fetchJupiterEvents({
-                provider,
-                start: pageStart,
-                end: pageEnd,
-                includeMarkets: true,
-                sortBy: "volume",
-                sortDirection: "desc",
-                filter: params?.filter,
+        if (result.markets.length > 0 || !hitRateLimit) {
+            marketsResponseCache.set(requestKey, {
+                expiresAt: Date.now() + MARKETS_RESPONSE_TTL_MS,
+                value: result,
             });
-            processResult(res.events, res.pagination);
         }
 
-        if (isDone) lastCursorNext = -1;
-        nextCursors.push(lastCursorNext);
-    }
+        if (result.markets.length > 0 && !params?.cursor && !params?.filter) {
+            cachedHomeBaseMarkets = result.markets;
+            cachedHomeBaseMarketsAt = Date.now();
+        }
 
-    // If all providers are exhausted, nextCursor is null
-    const hasMore = nextCursors.some(c => c !== -1);
-    const nextCursor = hasMore ? nextCursors.map(c => (c === -1 ? "DONE" : c)).join(":") : null;
+        return result;
+    })().finally(() => {
+        inFlightMarketsRequests.delete(requestKey);
+    });
 
-    allMarkets.sort((a, b) => getMarketSortScore(b, sortPreference) - getMarketSortScore(a, sortPreference));
-
-    const categories = [...new Set(allMarkets.map((m) => m.category))]
-        .filter((c) => c !== "Other")
-        .sort((a, b) => a.localeCompare(b));
-
-    return { markets: allMarkets, categories, nextCursor };
+    inFlightMarketsRequests.set(requestKey, requestPromise);
+    return requestPromise;
 }
 
 /**
@@ -726,6 +866,9 @@ export async function fetchMarketForApp(id: string): Promise<Market | null> {
                     sortBy: "volume",
                     sortDirection: "desc",
                 });
+                if (events.length === 0 && !pagination) {
+                    break;
+                }
                 for (const event of events) {
                     const hasMarket = event.markets?.some((m) => m.marketId === id);
                     if (hasMarket) {

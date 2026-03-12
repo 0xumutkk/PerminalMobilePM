@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Pressable, Platform } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -17,6 +17,7 @@ import { Image } from "expo-image";
 import { Modal } from "react-native";
 import { getTokenBalance } from "../../../lib/solana";
 import { GlassHeader } from "../../../components/ui/GlassHeader";
+import { BottomProgressiveBlur } from "../../../components/ui/BottomProgressiveBlur";
 import { usePositions } from "../../../hooks/usePositions";
 import {
     fetchClusteredMarketChartFromJupiter,
@@ -31,6 +32,15 @@ import {
 type Trade = MarketActivityTrade;
 
 type TabKey = "markets" | "positions" | "about" | "holders" | "activity";
+type ChartSnapshot = {
+    cacheKey: string;
+    points: ChartPoint[];
+    clusteredSeries: ClusteredMarketSeries[];
+    valueType: "probability" | "price";
+    assetLabel?: string;
+};
+
+const RANGE_PRIORITY: ChartRange[] = ["1H", "6H", "1D", "1W", "1M", "ALL"];
 
 const SUPPORTS_GLASS = Platform.OS === "ios" && isLiquidGlassAvailable();
 
@@ -56,6 +66,117 @@ function getCleanMarketTitle(title: string, groupTitle: string): string {
         if (clean) return clean;
     }
     return mt;
+}
+
+function getChartRangeWindowMs(range: ChartRange): number {
+    if (range === "1H") return 1 * 60 * 60 * 1000;
+    if (range === "6H") return 6 * 60 * 60 * 1000;
+    if (range === "1D") return 24 * 60 * 60 * 1000;
+    if (range === "1W") return 7 * 24 * 60 * 60 * 1000;
+    if (range === "1M") return 30 * 24 * 60 * 60 * 1000;
+    return Number.POSITIVE_INFINITY;
+}
+
+function filterPointsToRange(points: ChartPoint[], cutoff: number): ChartPoint[] {
+    if (points.length === 0) return [];
+    const filtered = points.filter((point) => point.timestamp >= cutoff);
+    return filtered.length > 0 ? filtered : [points[points.length - 1]];
+}
+
+function getSnapshotAnchorTimestamp(snapshot: Pick<ChartSnapshot, "points" | "clusteredSeries">): number {
+    const timestamps = [
+        ...snapshot.points.map((point) => point.timestamp),
+        ...snapshot.clusteredSeries.flatMap((series) => series.data.map((point) => point.timestamp)),
+    ].filter((timestamp) => Number.isFinite(timestamp));
+    return timestamps.length > 0 ? Math.max(...timestamps) : Date.now();
+}
+
+function buildRangePreviewSnapshot(source: ChartSnapshot, range: ChartRange): ChartSnapshot {
+    if (range === "ALL") {
+        return {
+            ...source,
+            points: [...source.points],
+            clusteredSeries: source.clusteredSeries.map((series) => ({
+                ...series,
+                data: [...series.data],
+            })),
+        };
+    }
+
+    const cutoff = getSnapshotAnchorTimestamp(source) - getChartRangeWindowMs(range);
+    const clusteredSeries = source.clusteredSeries
+        .map((series) => ({
+            ...series,
+            data: filterPointsToRange(series.data, cutoff),
+        }))
+        .filter((series) => series.data.length > 0);
+
+    const points =
+        source.points.length > 0
+            ? filterPointsToRange(source.points, cutoff)
+            : (clusteredSeries[0]?.data ?? []);
+
+    return {
+        ...source,
+        points,
+        clusteredSeries,
+    };
+}
+
+function buildChartInputs(targetMarket: Market, clusterMarkets: ClusteredMarketInput[]): ClusteredMarketInput[] {
+    const marketId = targetMarket.marketId || targetMarket.id;
+    if (!marketId) return [];
+
+    const clusteredCandidates = clusterMarkets
+        .filter((item) => !!item.marketId)
+        .filter((item) => item.marketId !== marketId);
+
+    if (clusteredCandidates.length > 0) {
+        return [
+            {
+                marketId,
+                label: targetMarket.title,
+                provider: targetMarket.provider,
+                polymarketAssetId: targetMarket.polymarketClobTokenId,
+            },
+            ...clusteredCandidates,
+        ];
+    }
+
+    return [{
+        marketId,
+        label: targetMarket.title,
+        provider: targetMarket.provider,
+        polymarketAssetId: targetMarket.polymarketClobTokenId,
+    }];
+}
+
+function buildChartCacheKey(targetMarket: Market, clusteredInputs: ClusteredMarketInput[]): string {
+    const primaryMarketId = targetMarket.marketId || targetMarket.id || "unknown";
+    const sourceKey = clusteredInputs
+        .map((item) => `${item.marketId}:${item.provider ?? "na"}:${item.polymarketAssetId ?? "na"}`)
+        .join("|");
+    return `${primaryMarketId}::${sourceKey}`;
+}
+
+function pickBestCachedSnapshot(
+    bucket: Partial<Record<ChartRange, ChartSnapshot>>,
+    targetRange: ChartRange
+): ChartSnapshot | null {
+    const startIndex = RANGE_PRIORITY.indexOf(targetRange);
+    if (startIndex === -1) return null;
+
+    for (let index = startIndex; index < RANGE_PRIORITY.length; index++) {
+        const candidate = bucket[RANGE_PRIORITY[index]];
+        if (candidate) return candidate;
+    }
+
+    for (let index = startIndex - 1; index >= 0; index--) {
+        const candidate = bucket[RANGE_PRIORITY[index]];
+        if (candidate) return candidate;
+    }
+
+    return null;
 }
 
 function MarketDetailScreen() {
@@ -87,12 +208,43 @@ function MarketDetailScreen() {
     const [chartAssetLabel, setChartAssetLabel] = useState<string | undefined>(undefined);
     const [multiChoiceMarkets, setMultiChoiceMarkets] = useState<Market[]>([]);
     const [tradingMarket, setTradingMarket] = useState<Market | null>(null);
+    const chartCacheRef = useRef<Record<string, Partial<Record<ChartRange, ChartSnapshot>>>>({});
+    const displayedChartSnapshotRef = useRef<ChartSnapshot | null>(null);
 
     const solanaWallet = useEmbeddedSolanaWallet();
     const isWalletConnected = isConnected(solanaWallet);
     const walletAddress = isWalletConnected && solanaWallet.wallets?.[0] ? solanaWallet.wallets[0].address : null;
 
-    const { activePositions } = usePositions();
+    const { activePositions, refresh: refreshPositions } = usePositions();
+
+    const applyChartSnapshot = useCallback((snapshot: ChartSnapshot) => {
+        displayedChartSnapshotRef.current = snapshot;
+        setClusterChartSeries(snapshot.clusteredSeries);
+        setChartValueType(snapshot.valueType);
+        setChartAssetLabel(snapshot.assetLabel);
+        setChartData(snapshot.points);
+    }, []);
+
+    const refreshVisibleMarketBalances = useCallback(async (targetMarket: Market | null) => {
+        if (!targetMarket || !walletAddress) {
+            setYesBalance(0);
+            setNoBalance(0);
+            return;
+        }
+
+        try {
+            const [yes, no] = await Promise.all([
+                targetMarket.yesMint ? getTokenBalance(walletAddress, targetMarket.yesMint) : Promise.resolve(0),
+                targetMarket.noMint ? getTokenBalance(walletAddress, targetMarket.noMint) : Promise.resolve(0),
+            ]);
+            setYesBalance(yes);
+            setNoBalance(no);
+        } catch (balanceError) {
+            console.warn("[MarketDetail] Failed to refresh token balances:", balanceError);
+            setYesBalance(0);
+            setNoBalance(0);
+        }
+    }, [walletAddress]);
 
     useEffect(() => {
         if (sideParam === "YES" || sideParam === "NO") {
@@ -128,22 +280,25 @@ function MarketDetailScreen() {
                     return;
                 }
 
-                // Fetch balances if wallet is connected
-                if (walletAddress) {
-                    if (m.yesMint) {
-                        getTokenBalance(walletAddress, m.yesMint).then(b => !cancelled && setYesBalance(b));
-                    }
-                    if (m.noMint) {
-                        getTokenBalance(walletAddress, m.noMint).then(b => !cancelled && setNoBalance(b));
-                    }
-                }
-
                 const finalYesPrice = m.yesPrice;
                 const probabilityHistory = m.priceHistory ?? [];
                 const primaryMarketId = m.marketId || m.id;
+                const initialChartInputs = primaryMarketId
+                    ? [{
+                        marketId: primaryMarketId,
+                        label: m.title,
+                        provider: m.provider,
+                        polymarketAssetId: m.polymarketClobTokenId,
+                    }]
+                    : [];
+                const initialSnapshot: ChartSnapshot = {
+                    cacheKey: primaryMarketId ? buildChartCacheKey(m, initialChartInputs) : `fallback:${m.id}`,
+                    points: probabilityHistory,
+                    clusteredSeries: [],
+                    valueType: "probability",
+                    assetLabel: undefined,
+                };
 
-                setChartData(probabilityHistory);
-                setClusterChartSeries([]);
                 setClusterMarkets(
                     primaryMarketId
                         ? [{
@@ -154,8 +309,7 @@ function MarketDetailScreen() {
                         }]
                         : []
                 );
-                setChartValueType("probability");
-                setChartAssetLabel(undefined);
+                applyChartSnapshot(initialSnapshot);
                 setMarket({
                     ...m,
                     yesPrice: finalYesPrice,
@@ -169,7 +323,14 @@ function MarketDetailScreen() {
                 if (!cancelled) setLoading(false);
             });
         return () => { cancelled = true; };
-    }, [id, walletAddress]);
+    }, [applyChartSnapshot, id, walletAddress]);
+
+    useEffect(() => {
+        if (!market) return;
+        refreshVisibleMarketBalances(market).catch((balanceError) => {
+            console.warn("[MarketDetail] Failed to refresh balances:", balanceError);
+        });
+    }, [market, refreshVisibleMarketBalances]);
 
     useEffect(() => {
         if (!market) return;
@@ -228,33 +389,33 @@ function MarketDetailScreen() {
         const marketId = market.marketId || market.id;
         const probabilityFallback = market.priceHistory ?? [];
         if (!marketId) {
-            setClusterChartSeries([]);
-            setChartValueType("probability");
-            setChartAssetLabel(undefined);
-            setChartData(probabilityFallback);
+            applyChartSnapshot({
+                cacheKey: `fallback:${market.id}`,
+                points: probabilityFallback,
+                clusteredSeries: [],
+                valueType: "probability",
+                assetLabel: undefined,
+            });
             return;
         }
 
-        const clusteredCandidates = clusterMarkets
-            .filter((item) => !!item.marketId)
-            .filter((item) => item.marketId !== marketId);
-        const clusteredInputs =
-            clusteredCandidates.length > 0
-                ? [
-                    {
-                        marketId,
-                        label: market.title,
-                        provider: market.provider,
-                        polymarketAssetId: market.polymarketClobTokenId,
-                    },
-                    ...clusteredCandidates,
-                ]
-                : [{
-                    marketId,
-                    label: market.title,
-                    provider: market.provider,
-                    polymarketAssetId: market.polymarketClobTokenId,
-                }];
+        const clusteredInputs = buildChartInputs(market, clusterMarkets);
+        const cacheKey = buildChartCacheKey(market, clusteredInputs);
+        const cacheBucket = chartCacheRef.current[cacheKey] ?? {};
+        chartCacheRef.current[cacheKey] = cacheBucket;
+
+        const cachedSnapshot = cacheBucket[activeRange];
+        if (cachedSnapshot) {
+            applyChartSnapshot(cachedSnapshot);
+        } else {
+            const optimisticSource =
+                pickBestCachedSnapshot(cacheBucket, activeRange) ??
+                (displayedChartSnapshotRef.current?.cacheKey === cacheKey ? displayedChartSnapshotRef.current : null);
+
+            if (optimisticSource) {
+                applyChartSnapshot(buildRangePreviewSnapshot(optimisticSource, activeRange));
+            }
+        }
 
         let cancelled = false;
         const loadChart = async () => {
@@ -274,21 +435,31 @@ function MarketDetailScreen() {
                         provider: market.provider,
                         polymarketAssetId: market.polymarketClobTokenId,
                         label: market.title,
+                        fallbackProbability: market.yesPrice,
                     });
                 }
 
                 if (cancelled) return;
-                setClusterChartSeries(clusteredSeries);
-                setChartValueType("probability");
-                setChartAssetLabel(undefined);
-                setChartData(points.length > 0 ? points : probabilityFallback);
+                const snapshot: ChartSnapshot = {
+                    cacheKey,
+                    clusteredSeries,
+                    points: points.length > 0 ? points : probabilityFallback,
+                    valueType: "probability",
+                    assetLabel: undefined,
+                };
+                cacheBucket[activeRange] = snapshot;
+                applyChartSnapshot(snapshot);
             } catch (err) {
                 if (!cancelled) {
                     console.warn("[MarketDetail] Failed to fetch market chart points:", err);
-                    setClusterChartSeries([]);
-                    setChartValueType("probability");
-                    setChartAssetLabel(undefined);
-                    setChartData(probabilityFallback);
+                    const fallbackSnapshot: ChartSnapshot = {
+                        cacheKey,
+                        clusteredSeries: [],
+                        points: probabilityFallback,
+                        valueType: "probability",
+                        assetLabel: undefined,
+                    };
+                    applyChartSnapshot(fallbackSnapshot);
                 }
             }
         };
@@ -303,12 +474,40 @@ function MarketDetailScreen() {
         };
     }, [
         activeRange,
+        applyChartSnapshot,
         market?.id,
         market?.marketId,
+        market?.polymarketClobTokenId,
+        market?.provider,
         market?.title,
         market?.priceHistory,
         clusterMarkets,
     ]);
+
+    const handleRangeChange = useCallback((nextRange: string) => {
+        const range = nextRange as ChartRange;
+        if (range === activeRange) return;
+
+        if (market) {
+            const clusteredInputs = buildChartInputs(market, clusterMarkets);
+            const cacheKey = buildChartCacheKey(market, clusteredInputs);
+            const cacheBucket = chartCacheRef.current[cacheKey] ?? {};
+            const optimisticSource =
+                cacheBucket[range] ??
+                pickBestCachedSnapshot(cacheBucket, range) ??
+                (displayedChartSnapshotRef.current?.cacheKey === cacheKey ? displayedChartSnapshotRef.current : null);
+
+            if (optimisticSource) {
+                applyChartSnapshot(
+                    optimisticSource === cacheBucket[range]
+                        ? optimisticSource
+                        : buildRangePreviewSnapshot(optimisticSource, range)
+                );
+            }
+        }
+
+        setActiveRange(range);
+    }, [activeRange, applyChartSnapshot, clusterMarkets, market]);
 
     // Fetch trades when Activity tab is selected
     useEffect(() => {
@@ -382,23 +581,38 @@ function MarketDetailScreen() {
     const chartColor = isUp ? "#10b981" : "#ef4444";
     const marketIddiaText = getMarketIddiaText(market);
     const marketId = market.marketId || market.id;
-    const currentPosition = activePositions.find(p => p.marketId === id || p.marketId === marketId);
+    const marketPositions = activePositions.filter((position) => position.marketId === id || position.marketId === marketId);
+    const currentPosition = marketPositions[0] ?? null;
+    const yesPositionAmount = marketPositions
+        .filter((position) => position.side === "YES")
+        .reduce((sum, position) => sum + position.amount, 0);
+    const noPositionAmount = marketPositions
+        .filter((position) => position.side === "NO")
+        .reduce((sum, position) => sum + position.amount, 0);
 
     // Check if we have a position either via token balances (if they exist) or via Jupiter position accounts
     const hasOpenPosition =
-        (currentPosition && currentPosition.amount > 0) ||
+        marketPositions.some((position) => position.amount > 0) ||
         yesBalance > 0.000001 ||
         noBalance > 0.000001;
 
     const preferredBuySide: TradeSide = currentPosition ? currentPosition.side : initialSide;
     const preferredSellSide: TradeSide =
-        currentPosition ? currentPosition.side :
-            (yesBalance >= noBalance ? "YES" : "NO");
+        yesPositionAmount === noPositionAmount
+            ? (yesBalance >= noBalance ? "YES" : "NO")
+            : yesPositionAmount > noPositionAmount
+                ? "YES"
+                : "NO";
     const primaryFooterLabel = hasOpenPosition ? "BUY" : "BUY YES";
     const secondaryFooterLabel = hasOpenPosition ? "SELL" : "BUY NO";
     const secondaryFooterMode: TradeMode = hasOpenPosition ? "SELL" : "BUY";
     const primaryFooterSide: TradeSide = hasOpenPosition ? preferredBuySide : "YES";
     const secondaryFooterSide: TradeSide = hasOpenPosition ? preferredSellSide : "NO";
+
+    const closeTradePanel = () => {
+        setShowTradePanel(false);
+        setTradingMarket(null);
+    };
 
     const handleOpenTrade = (side: TradeSide, mode: TradeMode = "BUY", marketToTrade?: Market) => {
         setInitialSide(side);
@@ -407,10 +621,23 @@ function MarketDetailScreen() {
         setShowTradePanel(true);
     };
 
-    const handleTradeSuccess = (details: { signature: string }) => {
-        const { signature } = details;
-        Alert.alert("Success", `Trade successful! Signature: ${signature.slice(0, 8)}...`);
-        setShowTradePanel(false);
+    const handleTradeSuccess = async (details: {
+        signature: string;
+        resolutionStatus: "filled" | "partially_filled";
+        marketId: string;
+    }) => {
+        const { signature, resolutionStatus, marketId: tradedMarketId } = details;
+
+        await refreshPositions();
+        if (tradedMarketId === marketId) {
+            await refreshVisibleMarketBalances(market);
+        }
+
+        Alert.alert(
+            resolutionStatus === "partially_filled" ? "Partially filled" : "Success",
+            `${resolutionStatus === "partially_filled" ? "Trade partially filled" : "Trade filled"}! Signature: ${signature.slice(0, 8)}...`
+        );
+        closeTradePanel();
     };
 
     return (
@@ -462,9 +689,10 @@ function MarketDetailScreen() {
                     color={chartColor}
                     series={clusterChartSeries}
                     activeRange={activeRange}
-                    onRangeChange={(range) => setActiveRange(range as ChartRange)}
+                    onRangeChange={handleRangeChange}
                     valueType={chartValueType}
                     assetLabel={chartAssetLabel}
+                    headlineValue={market.yesPrice}
                 />
 
                 {/* Position / About / Holders / Activity block (chart altı, ~350px) */}
@@ -812,22 +1040,23 @@ function MarketDetailScreen() {
                 visible={showTradePanel}
                 animationType="slide"
                 transparent={true}
-                onRequestClose={() => setShowTradePanel(false)}
+                onRequestClose={closeTradePanel}
             >
-                <Pressable style={styles.modalOverlay} onPress={() => setShowTradePanel(false)}>
+                <Pressable style={styles.modalOverlay} onPress={closeTradePanel}>
                     <Pressable style={styles.modalContent} onPress={(e) => e.stopPropagation()}>
                         <TradePanel
                             market={tradingMarket || market}
                             onSuccess={handleTradeSuccess}
                             initialSide={initialSide}
                             initialTradeMode={initialTradeMode}
-                            onClose={() => setShowTradePanel(false)}
+                            onClose={closeTradePanel}
                         />
                     </Pressable>
                 </Pressable>
             </Modal>
 
             {/* Sticky Footer Actions */}
+            <BottomProgressiveBlur style={styles.footerBlurLayer} />
             <View style={styles.footer}>
                 <Pressable
                     style={({ pressed }) => [
@@ -1504,6 +1733,10 @@ const styles = StyleSheet.create({
         paddingBottom: Platform.OS === "ios" ? 34 : 16,
         flexDirection: "row",
         gap: 12,
+        zIndex: 1,
+    },
+    footerBlurLayer: {
+        zIndex: 0,
     },
     tradeButton: {
         flex: 1,

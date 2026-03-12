@@ -36,6 +36,29 @@ export interface ClusteredMarketSeries {
     data: ChartPoint[];
 }
 
+function isUsableProbability(value: number | null | undefined): value is number {
+    return typeof value === "number" && Number.isFinite(value) && value > 0 && value < 1;
+}
+
+function pickSingleMarketFallbackProbability(
+    orderbookMid: number | null,
+    fallbackProbability?: number
+): { value: number | null; source: "orderbook-flat" | "market-price-flat" | "none" } {
+    const safeFallback = isUsableProbability(fallbackProbability ?? null) ? fallbackProbability! : null;
+
+    if (!isUsableProbability(orderbookMid)) {
+        return safeFallback != null
+            ? { value: safeFallback, source: "market-price-flat" }
+            : { value: null, source: "none" };
+    }
+
+    if (safeFallback != null && Math.abs(orderbookMid - safeFallback) >= 0.25) {
+        return { value: safeFallback, source: "market-price-flat" };
+    }
+
+    return { value: orderbookMid, source: "orderbook-flat" };
+}
+
 interface JupiterTradesResponse {
     data: Array<{
         id?: number;
@@ -485,6 +508,23 @@ function dedupeAdjacentPoints(points: ChartPoint[]): ChartPoint[] {
         deduped.push(point);
     }
     return deduped;
+}
+
+function clipChartPointsToRange(points: ChartPoint[], range: ChartRange): ChartPoint[] {
+    if (points.length === 0 || range === "ALL") return points;
+
+    const windowMs = getRangeWindowMs(range);
+    if (!Number.isFinite(windowMs) || windowMs <= 0) return points;
+
+    const anchorTs = points[points.length - 1]?.timestamp ?? Date.now();
+    const cutoff = anchorTs - windowMs;
+    const clipped = points.filter((point) => point.timestamp >= cutoff);
+
+    if (clipped.length > 0) {
+        return dedupeAdjacentPoints(clipped);
+    }
+
+    return [points[points.length - 1]];
 }
 
 function buildFlatLineFromMid(
@@ -1114,7 +1154,7 @@ function mapOrdersToActivity(
 export async function fetchMarketChartPointsFromJupiter(
     marketId: string,
     range: ChartRange,
-    options?: { provider?: string; polymarketAssetId?: string; label?: string }
+    options?: { provider?: string; polymarketAssetId?: string; label?: string; fallbackProbability?: number }
 ): Promise<ChartPoint[]> {
     if (!marketId) return [];
 
@@ -1189,15 +1229,19 @@ export async function fetchMarketChartPointsFromJupiter(
     }
 
     const midYesProbability = await fetchOrderbookMidYesProbability(marketId);
-    if (midYesProbability == null) return [];
+    const fallbackSelection = pickSingleMarketFallbackProbability(
+        midYesProbability,
+        options?.fallbackProbability
+    );
+    if (fallbackSelection.value == null) return [];
 
     if (typeof __DEV__ !== "undefined" && __DEV__) {
         console.log(
-            `[JupiterChart] ${marketId} range=${range} source=orderbook-flat points-from-mid`
+            `[JupiterChart] ${marketId} range=${range} source=${fallbackSelection.source} points-from-mid`
         );
     }
 
-    return buildFlatLineFromMid(midYesProbability, range);
+    return buildFlatLineFromMid(fallbackSelection.value, range);
 }
 
 export async function fetchClusteredMarketChartFromJupiter(
@@ -1253,6 +1297,7 @@ export async function fetchClusteredMarketChartFromJupiter(
     }
 
     const polymarketCharts = new Map<string, ChartPoint[]>();
+    const polymarketMonthlyRescueCharts = new Map<string, ChartPoint[]>();
     await Promise.all(
         polymarketInputs.map(async (item) => {
             let assetId = item.polymarketAssetId || item.marketId;
@@ -1269,6 +1314,17 @@ export async function fetchClusteredMarketChartFromJupiter(
             const points = await fetchPolymarketPricesHistoryChartPoints(assetId, range);
             if (points.length > 0) {
                 polymarketCharts.set(item.marketId, points);
+                return;
+            }
+
+            if (range === "1M") {
+                const rescuePoints = clipChartPointsToRange(
+                    await fetchPolymarketPricesHistoryChartPoints(assetId, "ALL"),
+                    "1M"
+                );
+                if (rescuePoints.length > 0) {
+                    polymarketMonthlyRescueCharts.set(item.marketId, rescuePoints);
+                }
             }
         })
     );
@@ -1293,9 +1349,17 @@ export async function fetchClusteredMarketChartFromJupiter(
             source = "polymarket-prices-history";
             points = polymarketCharts.get(item.marketId) ?? [];
         }
+        if (points.length === 0 && range === "1M" && (!item.provider || item.provider === "polymarket")) {
+            source = "polymarket-prices-history-all-clipped";
+            points = polymarketMonthlyRescueCharts.get(item.marketId) ?? [];
+        }
         if (points.length === 0) {
-            source = "orderbook";
-            pendingOrderbook.push(item.marketId);
+            if (range === "1M") {
+                source = "no-flat-fallback";
+            } else {
+                source = "orderbook";
+                pendingOrderbook.push(item.marketId);
+            }
         }
 
         if (typeof __DEV__ !== "undefined" && __DEV__) {
