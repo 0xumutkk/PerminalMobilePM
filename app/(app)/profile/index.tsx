@@ -13,6 +13,7 @@ import {
     Clock,
     Settings,
 } from "lucide-react-native";
+import { BottomProgressiveBlur } from "../../../components/ui/BottomProgressiveBlur";
 
 export default function ProfileScreen() {
     const router = useRouter();
@@ -123,6 +124,8 @@ export default function ProfileScreen() {
             ) : (
                 <ProfilePostsTab userId={profile?.id} />
             )}
+
+            <BottomProgressiveBlur style={styles.bottomBlur} />
         </SafeAreaView>
     );
 }
@@ -246,5 +249,8 @@ const styles = StyleSheet.create({
     },
     activeTabText: {
         opacity: 1,
+    },
+    bottomBlur: {
+        zIndex: 40,
     },
 });

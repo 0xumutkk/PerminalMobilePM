@@ -23,6 +23,7 @@ import { supabase } from "../../../lib/supabase";
 import type { Market, MarketGroup } from "../../../lib/mock-data";
 import { MarketCardNative } from "../../../components/MarketCardNative";
 import { useAuth } from "../../../hooks/useAuth";
+import { BottomProgressiveBlur } from "../../../components/ui/BottomProgressiveBlur";
 
 const SUPPORTS_GLASS = Platform.OS === "ios" && isLiquidGlassAvailable();
 const MIN_QUERY_LENGTH = 2;
@@ -528,6 +529,7 @@ export default function SearchScreen() {
                 }
                 ItemSeparatorComponent={() => <View style={styles.itemSeparator} />}
             />
+            <BottomProgressiveBlur style={styles.bottomBlur} />
         </SafeAreaView>
     );
 }
@@ -608,7 +610,7 @@ const styles = StyleSheet.create({
     },
     listContent: {
         padding: 16,
-        paddingBottom: 32,
+        paddingBottom: 120,
         gap: 12,
     },
     loadingIndicator: {
@@ -745,5 +747,8 @@ const styles = StyleSheet.create({
         color: "#4b5563",
         fontSize: 14,
         fontWeight: "500",
+    },
+    bottomBlur: {
+        zIndex: 40,
     },
 });

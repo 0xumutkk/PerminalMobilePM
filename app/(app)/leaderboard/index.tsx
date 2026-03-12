@@ -33,6 +33,7 @@ import Animated, {
 } from "react-native-reanimated";
 import { BlurView } from "expo-blur";
 import { GlassView, isLiquidGlassAvailable } from "expo-glass-effect";
+import { BottomProgressiveBlur } from "../../../components/ui/BottomProgressiveBlur";
 
 const SUPPORTS_GLASS = Platform.OS === "ios" && isLiquidGlassAvailable();
 
@@ -439,6 +440,7 @@ export default function LeaderboardScreen() {
                     }
                 />
             )}
+            <BottomProgressiveBlur style={styles.bottomBlur} />
         </View>
     );
 }
@@ -602,7 +604,7 @@ const styles = StyleSheet.create({
     listContent: {
         paddingHorizontal: 14,
         paddingTop: 8,
-        paddingBottom: 24,
+        paddingBottom: 120,
     },
     row: {
         flexDirection: "row",
@@ -776,5 +778,8 @@ const styles = StyleSheet.create({
     stickyHeaderBorder: {
         height: 1,
         backgroundColor: "rgba(0,0,0,0.05)",
+    },
+    bottomBlur: {
+        zIndex: 40,
     },
 });

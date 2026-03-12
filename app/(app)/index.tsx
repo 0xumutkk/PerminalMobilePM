@@ -9,7 +9,6 @@ import {
     Modal,
     Alert,
     RefreshControl,
-    Platform,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -26,7 +25,6 @@ import { TradePanel } from "../../components/market/TradePanel";
 import { TradeSide } from "../../hooks/useTrade";
 import {
     Bell,
-    Search as SearchIcon,
     Flame,
     Landmark,
     Trophy,
@@ -47,13 +45,10 @@ import Animated, {
     Extrapolation,
 } from "react-native-reanimated";
 import { LinearGradient } from "expo-linear-gradient";
-import { BlurView } from "expo-blur";
-import { GlassView, isLiquidGlassAvailable } from "expo-glass-effect";
 import { FlashList } from "@shopify/flash-list";
+import { BottomProgressiveBlur } from "../../components/ui/BottomProgressiveBlur";
 
 const AnimatedFlashList = Animated.createAnimatedComponent(FlashList);
-
-const SUPPORTS_GLASS = Platform.OS === "ios" && isLiquidGlassAvailable();
 const CATEGORY_PRIORITY = [
     "Politics",
     "Sports",
@@ -934,6 +929,7 @@ export default function HomeFeed() {
                     )
                 }
             />
+            <BottomProgressiveBlur style={styles.feedBottomBlur} />
 
             <Modal
                 visible={showOddsSortSheet}
@@ -1353,5 +1349,8 @@ const styles = StyleSheet.create({
     stickyHeaderBorder: {
         height: 1,
         backgroundColor: "rgba(0,0,0,0.05)",
+    },
+    feedBottomBlur: {
+        zIndex: 40,
     },
 });

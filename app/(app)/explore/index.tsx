@@ -7,6 +7,7 @@ import { CreatePost } from "../../../components/social/CreatePost";
 import { migrateFigmaPosts } from "../../../lib/migrate";
 import { Image } from "expo-image";
 import { Plus, Grid } from "lucide-react-native";
+import { BottomProgressiveBlur } from "../../../components/ui/BottomProgressiveBlur";
 
 export default function ExploreScreen() {
   const [tab, setTab] = useState<'foryou' | 'following'>('foryou');
@@ -100,6 +101,8 @@ export default function ExploreScreen() {
         onTradePress={handleTradePress}
       />
 
+      <BottomProgressiveBlur style={styles.bottomBlur} />
+
       {/* Floating Action Button */}
       <TouchableOpacity
         style={styles.fab}
@@ -190,5 +193,8 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.2,
     shadowRadius: 10,
     elevation: 10,
+  },
+  bottomBlur: {
+    zIndex: 40,
   },
 });

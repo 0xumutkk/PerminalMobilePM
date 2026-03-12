@@ -149,7 +149,7 @@ export function Feed({ userId, marketId, ListHeaderComponent: CustomListHeaderCo
 
 const styles = StyleSheet.create({
     listContent: {
-        paddingBottom: 20,
+        paddingBottom: 120,
         backgroundColor: "#f0f0f0",
         minHeight: "100%",
     },

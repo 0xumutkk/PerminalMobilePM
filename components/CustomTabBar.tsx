@@ -9,7 +9,6 @@ import { HomeFilledIcon, GlobeFilledIcon, IncentiveIcon, SearchIcon } from "./Ta
 
 const PROFILE_AVATAR = "https://www.figma.com/api/mcp/asset/2e4567f9-2300-4518-964f-d6427d5eb261";
 const TAB_BAR_WIDTH = 316;
-const BOTTOM_BLUR_HEIGHT = 240;
 /** Glass background: rgba(255,255,255,0.1) per Figma node 1-14233 */
 const TAB_BAR_BG = "rgba(255,255,255,0.1)";
 /** Selection fill from Figma node 1-14235 */
@@ -43,22 +42,6 @@ export function CustomTabBar({ state, descriptors, navigation, insets }: BottomT
             style={styles.container}
             pointerEvents="box-none"
         >
-            <View style={styles.bottomBlurLayer} pointerEvents="none">
-                <LinearGradient
-                    colors={["rgba(217, 217, 217, 0)", "#f9f9f9"]}
-                    locations={[0, 1]}
-                    start={{ x: 0.5, y: 0 }}
-                    end={{ x: 0.5, y: 1 }}
-                    style={StyleSheet.absoluteFill}
-                >
-                    <BlurView
-                        intensity={30}
-                        tint="light"
-                        style={[styles.blurview, { top: "67.66%" }]}
-                    />
-                </LinearGradient>
-            </View>
-
             <View
                 style={[
                     styles.tabBarWrapper,
@@ -177,6 +160,7 @@ const styles = StyleSheet.create({
         right: 0,
         bottom: 0,
         alignItems: "center",
+        zIndex: 60,
     },
     tabBarWrapper: {
         position: "absolute",
@@ -193,13 +177,6 @@ const styles = StyleSheet.create({
         shadowOpacity: 0.08,
         shadowRadius: 12,
         elevation: 5,
-    },
-    bottomBlurLayer: {
-        position: "absolute",
-        left: 0,
-        right: 0,
-        bottom: 0,
-        height: BOTTOM_BLUR_HEIGHT,
     },
     glassOverlay: {
         backgroundColor: TAB_BAR_BG,
@@ -249,9 +226,5 @@ const styles = StyleSheet.create({
     profileIcon: {
         width: "100%",
         height: "100%",
-    },
-    blurview: {
-        ...StyleSheet.absoluteFillObject,
-        opacity: 1,
     },
 });
