@@ -102,6 +102,13 @@ export interface JupiterSearchResponse {
 
 // ─── Order Types ────────────────────────────────────────────────
 
+export type JupiterKnownOrderStatus =
+    | "open"
+    | "filled"
+    | "partially_filled"
+    | "cancelled"
+    | "expired";
+
 export interface JupiterCreateOrderRequest {
     ownerPubkey: string;
     marketId: string;
@@ -137,6 +144,7 @@ export interface JupiterCreateOrderResponse {
 }
 
 export interface JupiterOrder {
+    orderPubkey?: string;
     orderId: string;
     marketId: string;
     ownerPubkey: string;
@@ -144,8 +152,9 @@ export interface JupiterOrder {
     isYes: boolean;
     contracts: string;
     priceUsd: string;
-    status: "open" | "filled" | "partially_filled" | "cancelled" | "expired";
+    status: JupiterKnownOrderStatus;
     filledContracts?: string;
+    positionPubkey?: string;
     createdAt?: string;
     updatedAt?: string;
 }

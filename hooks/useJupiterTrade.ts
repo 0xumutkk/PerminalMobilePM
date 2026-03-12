@@ -1,11 +1,10 @@
-import { useState } from 'react';
-import { usePrivy, useEmbeddedSolanaWallet } from '@privy-io/expo';
-import { jupiterTradeService } from '../lib/services/jupiterTrade';
-import { Connection, Transaction, VersionedTransaction } from '@solana/web3.js';
-import { Buffer } from 'buffer';
+import { useState } from "react";
+import { useEmbeddedSolanaWallet } from "@privy-io/expo";
+import { Connection, VersionedTransaction } from "@solana/web3.js";
+import { Buffer } from "buffer";
+import { jupiterTradeService } from "../lib/services/jupiterTrade";
 
 export function useJupiterTrade() {
-    const { user } = usePrivy();
     const solanaWallet = useEmbeddedSolanaWallet();
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -13,8 +12,10 @@ export function useJupiterTrade() {
     const executeTrade = async (params: {
         marketId: string;
         side: "YES" | "NO";
-        contracts: number;
         isBuy: boolean; // true for buy, false for sell
+        amountUsdc?: number;
+        contracts?: number;
+        positionPubkey?: string;
         maxBuyPriceUsd?: number;
         minSellPriceUsd?: number;
     }) => {
@@ -32,20 +33,27 @@ export function useJupiterTrade() {
 
             // 1. Create Order via Jupiter API
             if (params.isBuy) {
+                if (params.amountUsdc == null) {
+                    throw new Error("Buy trades require amountUsdc.");
+                }
                 orderResponse = await jupiterTradeService.buy({
                     ownerPubkey,
                     marketId: params.marketId,
                     side: params.side,
-                    contracts: params.contracts,
+                    amountUsdc: params.amountUsdc,
                     maxBuyPriceUsd: params.maxBuyPriceUsd,
                 });
             } else {
+                if (params.contracts == null || !params.positionPubkey) {
+                    throw new Error("Sell trades require contracts and positionPubkey.");
+                }
                 orderResponse = await jupiterTradeService.sell({
                     ownerPubkey,
                     marketId: params.marketId,
                     side: params.side,
                     contracts: params.contracts,
                     minSellPriceUsd: params.minSellPriceUsd,
+                    positionPubkey: params.positionPubkey,
                 });
             }
 
@@ -54,7 +62,7 @@ export function useJupiterTrade() {
             }
 
             // 2. Deserialize Transaction Payload
-            const transactionBuffer = Buffer.from(orderResponse.transaction, 'base64');
+            const transactionBuffer = Buffer.from(orderResponse.transaction, "base64");
             const transaction = VersionedTransaction.deserialize(transactionBuffer);
 
             // 3. Sign and Send with Privy Embedded Wallet
@@ -62,11 +70,11 @@ export function useJupiterTrade() {
 
             // Need a connection to broadcast
             // We use a public endpoint or your RPC from env
-            const rpcUrl = process.env.EXPO_PUBLIC_SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
-            const connection = new Connection(rpcUrl, 'confirmed');
+            const rpcUrl = process.env.EXPO_PUBLIC_SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
+            const connection = new Connection(rpcUrl, "confirmed");
 
             const signature = await provider.request({
-                method: 'signAndSendTransaction',
+                method: "signAndSendTransaction",
                 params: {
                     transaction,
                     connection,
@@ -89,6 +97,6 @@ export function useJupiterTrade() {
     return {
         executeTrade,
         isLoading,
-        error
+        error,
     };
 }

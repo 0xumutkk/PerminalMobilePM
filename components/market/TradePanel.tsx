@@ -2,20 +2,19 @@ import React, { useState, useEffect, useCallback } from "react";
 import { View, Text, StyleSheet, Pressable, Dimensions, Platform } from "react-native";
 import { Image } from "expo-image";
 import { ChevronDown, Delete } from "lucide-react-native";
-import { useTrade, TradeSide, TradeMode } from "../../hooks/useTrade";
-import { useFundSolanaWallet } from "@privy-io/expo/ui";
-import { usePositions } from "../../hooks/usePositions";
-import { Market } from "../../lib/mock-data";
-import { SwipeToBuy } from "./SwipeToBuy";
-import { getTokenBalance } from "../../lib/solana";
 import Animated, {
     useSharedValue,
     useAnimatedStyle,
     withSpring,
     runOnJS,
-    withTiming
+    withTiming,
 } from "react-native-reanimated";
 import { GestureDetector, Gesture } from "react-native-gesture-handler";
+import { useFundSolanaWallet } from "@privy-io/expo/ui";
+import { useTrade, TradeSide, TradeMode } from "../../hooks/useTrade";
+import { usePositions } from "../../hooks/usePositions";
+import { Market } from "../../lib/mock-data";
+import { SwipeToBuy } from "./SwipeToBuy";
 
 interface TradePanelProps {
     market: Market;
@@ -25,20 +24,25 @@ interface TradePanelProps {
         amount: number;
         price: number;
         mode: TradeMode;
-    }) => void;
+        marketId: string;
+        resolutionStatus: "filled" | "partially_filled";
+    }) => void | Promise<void>;
     initialSide?: TradeSide;
     initialTradeMode?: TradeMode;
     onClose?: () => void;
 }
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
-const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-const MIN_TRADE_USD = 1.05;
+const MIN_BUY_ORDER_USD = 1.01;
 const PANEL_HEIGHT = SCREEN_HEIGHT * 0.92;
 const CONTENT_HORIZONTAL_PADDING = 12;
 const KEY_HEIGHT = 46;
 const FOOTER_BOTTOM_PADDING = Platform.OS === "ios" ? 6 : 4;
 const FEEDBACK_BOTTOM = Platform.OS === "ios" ? 8 : 6;
+
+function formatPositionId(positionId: string): string {
+    return `${positionId.slice(0, 4)}...${positionId.slice(-4)}`;
+}
 
 export function TradePanel({
     market,
@@ -48,6 +52,7 @@ export function TradePanel({
     onClose,
 }: TradePanelProps) {
     const translateY = useSharedValue(0);
+    const marketId = market.marketId || market.id;
 
     const panGesture = Gesture.Pan()
         .onUpdate((event) => {
@@ -68,30 +73,40 @@ export function TradePanel({
     const animatedStyle = useAnimatedStyle(() => ({
         transform: [{ translateY: translateY.value }],
     }));
+
     const {
         buy,
         sell,
         getQuote,
         getSwapQuote,
+        clearQuote,
         isLoading,
+        isQuoting,
         error,
         quote,
+        quoteContext,
+        orderStatus,
+        submitPhase,
         reset,
         usdcBalance,
         walletAddress,
     } = useTrade();
     const { activePositions } = usePositions();
     const { fundWallet } = useFundSolanaWallet();
+
     const [side, setSide] = useState<TradeSide>(initialSide);
     const [tradeMode, setTradeMode] = useState<TradeMode>(initialTradeMode);
     const [amount, setAmount] = useState<string>("");
-    const [sideBalance, setSideBalance] = useState<number>(0);
-    const [slippageBps] = useState<number | null>(null); // null = Auto
     const [showDetails, setShowDetails] = useState(false);
-    const selectedOutcomeMint = side === "YES" ? market.yesMint : market.noMint;
-    const settlementMint = market.collateralMint || USDC_MINT;
+    const [selectedPositionId, setSelectedPositionId] = useState<string | null>(null);
 
-    // Sync side if initialSide changes
+    const marketPositions = activePositions.filter((position) => position.marketId === marketId);
+    const matchingPositions = marketPositions.filter((position) => position.side === side);
+    const selectedPosition = matchingPositions.find((position) => position.mint === selectedPositionId) ?? null;
+
+    const isOrderPending = submitPhase === "transaction_submitted" && orderStatus === "open";
+    const interactionLocked = isLoading || isOrderPending;
+
     useEffect(() => {
         setSide(initialSide);
     }, [initialSide]);
@@ -100,185 +115,218 @@ export function TradePanel({
         setTradeMode(initialTradeMode);
     }, [initialTradeMode]);
 
-    // Reset state when market changes
     useEffect(() => {
         reset();
         setAmount("");
+        setSelectedPositionId(null);
+        setShowDetails(false);
     }, [market.id, reset]);
 
     useEffect(() => {
-        reset();
-        setAmount("");
-
-        // When switching to SELL mode, automatically set the side to what the user owns
-        if (tradeMode === "SELL") {
-            const marketId = market.marketId || market.id;
-            const currentPosition = activePositions.find(p => p.marketId === marketId);
-            if (currentPosition && currentPosition.amount > 0) {
-                setSide(currentPosition.side);
-            }
-        }
-    }, [tradeMode, reset, market.id, activePositions]);
-
-    const refreshSideBalance = useCallback(async () => {
-        if (!walletAddress) {
-            setSideBalance(0);
+        if (tradeMode !== "SELL") {
+            setSelectedPositionId(null);
             return;
         }
 
-        const marketId = market.marketId || market.id;
-        const currentPosition = activePositions.find(p => p.marketId === marketId);
+        const yesPositions = marketPositions.filter((position) => position.side === "YES");
+        const noPositions = marketPositions.filter((position) => position.side === "NO");
+        const hasCurrentSideInventory = matchingPositions.length > 0;
 
-        // If we found a matching position in usePositions, use that value
-        if (currentPosition) {
-            // Check if the current selected side matches the position side
-            if (currentPosition.side === side) {
-                setSideBalance(currentPosition.amount);
-            } else {
-                setSideBalance(0);
-            }
+        if (hasCurrentSideInventory) return;
+
+        if (yesPositions.length > 0 && noPositions.length === 0) {
+            setSide("YES");
             return;
         }
 
-        // Fallback for DFlow/Legacy markets
-        if (selectedOutcomeMint) {
-            try {
-                const balance = await getTokenBalance(walletAddress, selectedOutcomeMint);
-                setSideBalance(balance);
-                return;
-            } catch {
-                setSideBalance(0);
-                return;
-            }
+        if (noPositions.length > 0 && yesPositions.length === 0) {
+            setSide("NO");
+            return;
         }
 
-        setSideBalance(0);
-    }, [walletAddress, selectedOutcomeMint, side, market.id, market.marketId, activePositions]);
+        if (yesPositions.length > 0 || noPositions.length > 0) {
+            const yesContracts = yesPositions.reduce((sum, position) => sum + position.amount, 0);
+            const noContracts = noPositions.reduce((sum, position) => sum + position.amount, 0);
+            setSide(yesContracts >= noContracts ? "YES" : "NO");
+        }
+    }, [matchingPositions.length, marketPositions, side, tradeMode]);
 
     useEffect(() => {
-        refreshSideBalance();
-    }, [refreshSideBalance]);
+        if (tradeMode !== "SELL") {
+            setSelectedPositionId(null);
+            return;
+        }
 
-    // Auto-quote when amount or side changes (debounced)
+        if (matchingPositions.length === 1) {
+            setSelectedPositionId(matchingPositions[0].mint);
+            return;
+        }
+
+        if (!matchingPositions.some((position) => position.mint === selectedPositionId)) {
+            setSelectedPositionId(null);
+        }
+    }, [matchingPositions, selectedPositionId, tradeMode]);
+
     useEffect(() => {
-        const numAmount = parseFloat(amount);
-        if (isNaN(numAmount) || numAmount < 0.1) return;
-        // Jupiter markets use market.id as the identifier, DFlow/Legacy use selectedOutcomeMint.
-        if (!selectedOutcomeMint && !market.id) return;
+        clearQuote();
+    }, [amount, clearQuote, market.id, selectedPositionId, side, tradeMode]);
 
+    useEffect(() => {
+        if (interactionLocked || !market.id || market.isTradeable === false) return;
+        if (!amount) return;
+
+        const numericAmount = parseFloat(amount);
+        if (tradeMode === "BUY") {
+            if (isNaN(numericAmount) || numericAmount < MIN_BUY_ORDER_USD) return;
+        } else {
+            if (!selectedPosition) return;
+            if (!/^\d+$/.test(amount)) return;
+            if (isNaN(numericAmount) || numericAmount < 1 || numericAmount > selectedPosition.amount) return;
+        }
+
+        const selectedPositionPubkey = selectedPosition?.mint ?? null;
         const timeoutId = setTimeout(() => {
             const expectedPrice = side === "YES" ? market.yesPrice : (1 - market.yesPrice);
+
             if (tradeMode === "BUY") {
                 getQuote({
                     marketId: market.id,
-                    amountUsdc: numAmount,
+                    amountUsdc: numericAmount,
                     side,
                     expectedPrice,
-                    slippageBps: slippageBps ?? undefined,
+                    selectedPositionId: null,
                 });
-            } else {
-                const marketId = market.marketId || market.id;
-                const currentPosition = activePositions.find(p => p.marketId === marketId);
-                const positionPubkey = currentPosition?.mint;
-
-                getSwapQuote({
-                    marketId: market.id,
-                    amountTokens: numAmount,
-                    side,
-                    expectedPrice,
-                    slippageBps: slippageBps ?? undefined,
-                    positionPubkey,
-                });
+                return;
             }
+
+            if (!selectedPositionPubkey) return;
+
+            getSwapQuote({
+                marketId: market.id,
+                amountTokens: numericAmount,
+                side,
+                expectedPrice,
+                positionPubkey: selectedPositionPubkey,
+                selectedPositionId: selectedPositionPubkey,
+            });
         }, 300);
 
         return () => clearTimeout(timeoutId);
     }, [
         amount,
-        side,
-        selectedOutcomeMint,
-        settlementMint,
-        slippageBps,
-        tradeMode,
         getQuote,
         getSwapQuote,
-        activePositions,
+        interactionLocked,
         market.id,
-        market.marketId,
+        market.isTradeable,
+        market.yesPrice,
+        selectedPosition,
+        side,
+        tradeMode,
     ]);
 
     const handleKeyPress = useCallback((key: string) => {
-        if (key === "backspace") {
-            setAmount(prev => prev.slice(0, -1));
-        } else if (key === ".") {
-            if (!amount.includes(".")) {
-                setAmount(prev => (prev === "" ? "0." : prev + "."));
-            }
-        } else {
-            // Limit to 2 decimal places
-            if (amount.includes(".")) {
-                const [, decimal] = amount.split(".");
-                if (decimal && decimal.length >= 2) return;
-            }
-            setAmount(prev => (prev === "0" ? key : prev + key));
-        }
-    }, [amount]);
+        if (interactionLocked) return;
 
-    const handleQuickAmount = useCallback((val: string) => {
-        const maxValue = tradeMode === "BUY" ? (usdcBalance ?? 0) : sideBalance;
-        if (val === "MAX") {
-            if (maxValue > 0) setAmount(maxValue.toFixed(2));
+        if (key === "backspace") {
+            setAmount((prev) => prev.slice(0, -1));
             return;
         }
 
-        const current = parseFloat(amount) || 0;
-        const add = tradeMode === "BUY"
-            ? parseFloat(val.replace("+$", ""))
-            : parseFloat(val.replace("+", ""));
-        setAmount((current + add).toFixed(2));
-    }, [amount, usdcBalance, sideBalance, tradeMode]);
+        if (tradeMode === "SELL") {
+            if (key === ".") return;
+            setAmount((prev) => (prev === "0" ? key : prev + key));
+            return;
+        }
+
+        if (key === ".") {
+            setAmount((prev) => {
+                if (prev.includes(".")) return prev;
+                return prev === "" ? "0." : `${prev}.`;
+            });
+            return;
+        }
+
+        setAmount((prev) => {
+            if (prev.includes(".")) {
+                const [, decimal] = prev.split(".");
+                if (decimal.length >= 2) return prev;
+            }
+            return prev === "0" ? key : prev + key;
+        });
+    }, [interactionLocked, tradeMode]);
+
+    const handleQuickAmount = useCallback((value: string) => {
+        if (interactionLocked) return;
+
+        if (tradeMode === "BUY") {
+            const maxValue = usdcBalance ?? 0;
+            if (value === "MAX") {
+                if (maxValue > 0) setAmount(maxValue.toFixed(2));
+                return;
+            }
+
+            const current = parseFloat(amount) || 0;
+            const increment = parseFloat(value.replace("+$", ""));
+            setAmount((current + increment).toFixed(2));
+            return;
+        }
+
+        if (!selectedPosition) return;
+        const maxContracts = Math.floor(selectedPosition.amount);
+        if (value === "MAX") {
+            if (maxContracts >= 1) setAmount(String(maxContracts));
+            return;
+        }
+
+        const current = parseInt(amount || "0", 10) || 0;
+        const increment = parseInt(value.replace("+", ""), 10);
+        setAmount(String(current + increment));
+    }, [amount, interactionLocked, selectedPosition, tradeMode, usdcBalance]);
 
     const handleTrade = async () => {
-        const numAmount = parseFloat(amount);
-        const minAmount = tradeMode === "BUY" ? MIN_TRADE_USD : 0.1;
-        if (isNaN(numAmount) || numAmount < minAmount) return;
-        // Jupiter markets use marketId, DFlow uses selectedOutcomeMint.
-        if (!market.id) return;
-
-        const marketId = market.marketId || market.id;
-        const currentPosition = activePositions.find(p => p.marketId === marketId);
-        const positionPubkey = currentPosition?.mint; // mint stores positionPubkey
+        const numericAmount = parseFloat(amount);
+        if (isNaN(numericAmount) || !market.id) return;
 
         const expectedPrice = side === "YES" ? market.yesPrice : (1 - market.yesPrice);
-        const signature =
-            tradeMode === "BUY"
-                ? await buy({
+        const result = tradeMode === "BUY"
+            ? await buy({
+                marketId: market.id,
+                amountUsdc: numericAmount,
+                side,
+                expectedPrice,
+                selectedPositionId: null,
+            })
+            : selectedPosition
+                ? await sell({
                     marketId: market.id,
-                    amountUsdc: numAmount,
+                    amountTokens: numericAmount,
                     side,
-                    slippageBps: slippageBps ?? undefined,
                     expectedPrice,
+                    positionPubkey: selectedPosition.mint,
+                    selectedPositionId: selectedPosition.mint,
                 })
-                : await sell({
-                    marketId: market.id,
-                    amountTokens: numAmount,
-                    side,
-                    slippageBps: slippageBps ?? undefined,
-                    expectedPrice,
-                    positionPubkey,
-                });
+                : null;
 
-        if (signature && onSuccess) {
-            onSuccess({
-                signature,
-                outcome: side,
-                amount: numAmount,
-                price: executionPrice,
-                mode: tradeMode
-            });
-        }
-        if (signature) {
-            await refreshSideBalance();
+        if (!result) return;
+
+        if (result.resolutionStatus === "filled" || result.resolutionStatus === "partially_filled") {
+            const orderObj = result.quote.order;
+            const quoteContracts = parseInt(orderObj.contracts ?? "0", 10);
+            const quoteTotalCost = parseInt(orderObj.orderCostUsd ?? "0", 10) / 1_000_000;
+            const quotePrice = quoteContracts > 0 ? quoteTotalCost / quoteContracts : 0;
+
+            if (onSuccess) {
+                await onSuccess({
+                    signature: result.signature,
+                    outcome: side,
+                    amount: numericAmount,
+                    price: quotePrice > 0 ? quotePrice : (side === "YES" ? market.yesPrice : (1 - market.yesPrice)),
+                    mode: tradeMode,
+                    marketId,
+                    resolutionStatus: result.resolutionStatus,
+                });
+            }
         }
     };
 
@@ -286,82 +334,122 @@ export function TradePanel({
         if (!walletAddress) return;
         try {
             await fundWallet({ address: walletAddress });
-        } catch (e) {
-            console.error("[TradePanel] Funding error:", e);
+        } catch (fundError) {
+            console.error("[TradePanel] Funding error:", fundError);
         }
     };
 
-    const availableBalance = tradeMode === "BUY" ? (usdcBalance ?? 0) : sideBalance;
-    const isInsufficientBalance = !!amount && parseFloat(amount) > availableBalance;
-    const hasSellInventory = sideBalance > 0;
+    const numericAmount = parseFloat(amount) || 0;
+    const isMarketTradeable = !!marketId && market.isTradeable !== false;
+    const hasSellInventory = matchingPositions.length > 0;
+    const needsPositionSelection = tradeMode === "SELL" && matchingPositions.length > 1 && !selectedPosition;
+    const availableBalance = tradeMode === "BUY" ? (usdcBalance ?? 0) : (selectedPosition?.amount ?? 0);
+    const isInsufficientBalance = !!amount && numericAmount > availableBalance;
+    const isCurrentSellAmountValid = tradeMode === "SELL"
+        ? !!selectedPosition && /^\d+$/.test(amount) && numericAmount >= 1 && numericAmount <= selectedPosition.amount
+        : true;
+    const expectedPositionPubkey = tradeMode === "SELL" ? (selectedPosition?.mint ?? null) : null;
+    const currentQuoteMatches = !!quote && !!quoteContext && (
+        quoteContext.marketId === market.id &&
+        quoteContext.tradeMode === tradeMode &&
+        quoteContext.side === side &&
+        quoteContext.amount === numericAmount &&
+        quoteContext.positionPubkey === expectedPositionPubkey &&
+        quoteContext.selectedPositionId === (selectedPositionId ?? null)
+    );
+    const activeQuote = currentQuoteMatches ? quote : null;
 
-    // Jupiter markets don't use mints but use marketId for trading.
-    const isMarketTradeable =
-        (!!selectedOutcomeMint || !!market.marketId) &&
-        market.isTradeable !== false;
+    const tradeBlockedReason = isOrderPending
+        ? "Order submitted and still pending fill. You can close this sheet and check back."
+        : !isMarketTradeable
+            ? "This market is not tradeable right now."
+            : tradeMode === "SELL" && !hasSellInventory
+                ? `No ${side} shares available to sell.`
+                : needsPositionSelection
+                    ? "Select a position to sell."
+                    : tradeMode === "SELL" && !!amount && !/^\d+$/.test(amount)
+                        ? "Sell amount must be a whole number of shares."
+                        : tradeMode === "SELL" && !!amount && numericAmount < 1
+                            ? "Minimum sell is 1 share."
+                            : tradeMode === "BUY" && !!amount && numericAmount < MIN_BUY_ORDER_USD
+                                ? "Minimum order is above $1.00 on Jupiter. Try $1.01 or more."
+                            : null;
 
-    const tradeBlockedReason = (!selectedOutcomeMint && !market.marketId)
-        ? "This market has no tradeable identifier."
-        : tradeMode === "SELL" && !hasSellInventory
-            ? `No ${side} shares available to sell.`
-            : tradeMode === "BUY" && !!amount && parseFloat(amount) < MIN_TRADE_USD
-                ? `Minimum order is $${MIN_TRADE_USD}.`
-                : market.isTradeable === false
-                    ? "This market is not tradeable right now."
-                    : null;
+    const hasValidQuote = currentQuoteMatches && !!activeQuote;
     const isButtonDisabled =
-        isLoading ||
-        isInsufficientBalance ||
+        interactionLocked ||
+        isQuoting ||
         !amount ||
-        parseFloat(amount) < (tradeMode === "BUY" ? MIN_TRADE_USD : 0.1) ||
-        !isMarketTradeable ||
-        (tradeMode === "SELL" && !hasSellInventory);
+        !!tradeBlockedReason ||
+        isInsufficientBalance ||
+        !hasValidQuote ||
+        (tradeMode === "SELL" && !isCurrentSellAmountValid);
 
-    // Calculations for UI
-    const numAmount = parseFloat(amount) || 0;
-    const currentPrice = side === "YES" ? market.yesPrice : (1 - market.yesPrice);
-
-    // Technical Details Calculation from Quote
-    const orderObj = quote?.order;
+    const orderObj = activeQuote?.order;
     const quoteContracts = orderObj ? parseInt(orderObj.contracts ?? "0", 10) : 0;
     const quoteTotalCost = orderObj ? parseInt(orderObj.orderCostUsd ?? "0", 10) / 1_000_000 : 0;
-    const quotePrice = (quoteContracts > 0) ? quoteTotalCost / quoteContracts : 0;
-
-    // Execution checks
+    const quotePrice = quoteContracts > 0 ? quoteTotalCost / quoteContracts : 0;
+    const currentPrice = side === "YES" ? market.yesPrice : (1 - market.yesPrice);
     const safeCurrentPrice = currentPrice > 0 ? currentPrice : 1;
     const executionPrice = quotePrice > 0 ? quotePrice : currentPrice;
-
     const rawPriceImpactPct = quotePrice > 0
         ? tradeMode === "BUY"
             ? ((executionPrice - safeCurrentPrice) / safeCurrentPrice) * 100
             : ((safeCurrentPrice - executionPrice) / safeCurrentPrice) * 100
         : 0;
     const priceImpactPct = Math.max(0, rawPriceImpactPct);
-
     const primaryValue = tradeMode === "BUY"
         ? quoteContracts > 0
             ? quoteContracts
             : safeCurrentPrice > 0
-                ? numAmount / safeCurrentPrice
+                ? numericAmount / safeCurrentPrice
                 : 0
         : quotePrice > 0
             ? quoteContracts * quotePrice
-            : numAmount * safeCurrentPrice;
+            : numericAmount * safeCurrentPrice;
     const primaryValueFormatted = primaryValue.toLocaleString("en-US", {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2,
     });
     const quickButtons = tradeMode === "BUY" ? ["+$1", "+$20", "+$100", "MAX"] : ["+1", "+5", "+10", "MAX"];
-    const swipeLabel = isInsufficientBalance
-        ? "Insufficient Balance"
-        : tradeMode === "SELL" && !hasSellInventory
-            ? "No shares to sell"
-            : !isMarketTradeable
-                ? "Market not tradeable"
-                : tradeMode === "BUY"
-                    ? "Swipe to buy"
-                    : "Swipe to sell";
-    const feedbackMessage = tradeBlockedReason || error;
+    const keypadRows = tradeMode === "BUY"
+        ? [["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], [".", "0", "backspace"]]
+        : [["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], ["", "0", "backspace"]];
+    const swipeLabel = isOrderPending
+        ? "Order pending"
+        : isQuoting
+            ? "Fetching quote..."
+            : tradeMode === "SELL" && !hasSellInventory
+                ? "No shares to sell"
+                : needsPositionSelection
+                    ? "Select a position"
+                    : isInsufficientBalance
+                        ? "Insufficient Balance"
+                        : !isMarketTradeable
+                            ? "Market not tradeable"
+                            : tradeMode === "BUY"
+                                ? "Swipe to buy"
+                                : "Swipe to sell";
+    const feedbackMessage = tradeBlockedReason || error || (isQuoting ? "Fetching latest quote..." : null);
+    const balanceLabel = tradeMode === "BUY"
+        ? "USD Balance"
+        : matchingPositions.length > 1 && !selectedPosition
+            ? "Position Balance"
+            : "Selected Position";
+    const balanceValue = tradeMode === "BUY"
+        ? `$${(usdcBalance ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+        : matchingPositions.length > 1 && !selectedPosition
+            ? "Select a position"
+            : `${availableBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} shares`;
+    const resetTrigger = [
+        tradeMode,
+        side,
+        amount,
+        selectedPositionId ?? "none",
+        submitPhase,
+        orderStatus ?? "none",
+        error ?? "none",
+    ].join("|");
 
     return (
         <GestureDetector gesture={panGesture}>
@@ -371,34 +459,35 @@ export function TradePanel({
                 </View>
 
                 <View style={styles.content}>
-                    {/* Market Header */}
                     <View style={styles.marketHeader}>
                         <Image source={{ uri: market.imageUrl }} style={styles.marketIcon} />
                         <Text style={styles.marketTitle} numberOfLines={1}>{market.title}</Text>
                     </View>
 
-                    {/* Buy/Sell Toggle */}
                     <View style={styles.toggleWrapper}>
                         <View style={styles.tradeTypeToggle}>
                             <Pressable
-                                style={[styles.toggleBtn, tradeMode === "BUY" && styles.toggleBtnActive]}
+                                style={[styles.toggleBtn, tradeMode === "BUY" && styles.toggleBtnActive, interactionLocked && styles.toggleBtnDisabled]}
                                 onPress={() => setTradeMode("BUY")}
+                                disabled={interactionLocked}
                             >
                                 <Text style={[styles.toggleText, tradeMode === "BUY" && styles.toggleTextActive]}>Buy</Text>
                             </Pressable>
                             <Pressable
-                                style={[styles.toggleBtn, tradeMode === "SELL" && styles.toggleBtnActive]}
+                                style={[styles.toggleBtn, tradeMode === "SELL" && styles.toggleBtnActive, interactionLocked && styles.toggleBtnDisabled]}
                                 onPress={() => setTradeMode("SELL")}
+                                disabled={interactionLocked}
                             >
                                 <Text style={[styles.toggleText, tradeMode === "SELL" && styles.toggleTextActive]}>Sell</Text>
                             </Pressable>
                         </View>
                     </View>
 
-                    {/* Main Amount Display */}
                     <View style={styles.amountDisplayContainer}>
                         <Text style={styles.amountText} numberOfLines={1} adjustsFontSizeToFit>
-                            {tradeMode === "BUY" ? `$${numAmount === 0 ? "0.00" : amount}` : `${numAmount === 0 ? "0.00" : amount}`}
+                            {tradeMode === "BUY"
+                                ? `$${numericAmount === 0 ? "0.00" : amount}`
+                                : `${numericAmount === 0 ? "0" : amount}`}
                         </Text>
                         {tradeMode === "SELL" && <Text style={styles.amountSuffix}>Shares</Text>}
                         <Text style={styles.sharesEstimate}>
@@ -408,35 +497,35 @@ export function TradePanel({
                         </Text>
                     </View>
 
-                    {/* Balance Selector */}
-                    <Pressable style={styles.balanceSelector} onPress={tradeMode === "BUY" ? handleFundWallet : undefined}>
+                    <Pressable
+                        style={styles.balanceSelector}
+                        onPress={tradeMode === "BUY" ? handleFundWallet : undefined}
+                        disabled={tradeMode !== "BUY"}
+                    >
                         <View style={styles.balanceIconBg}>
                             <Text style={styles.balanceIconText}>$</Text>
                         </View>
                         <View style={styles.balanceInfo}>
-                            <Text style={styles.balanceLabel}>{tradeMode === "BUY" ? "USD Balance" : `${side} Balance`}</Text>
-                            <Text style={styles.balanceValue}>
-                                {tradeMode === "BUY"
-                                    ? `$${(usdcBalance ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                                    : `${sideBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} shares`}
-                            </Text>
+                            <Text style={styles.balanceLabel}>{balanceLabel}</Text>
+                            <Text style={styles.balanceValue}>{balanceValue}</Text>
                         </View>
                         <ChevronDown color="#999" size={14} />
                     </Pressable>
 
-                    {/* Yes/No Selection Pills */}
                     <View style={styles.sidePillsContainer}>
                         <Pressable
-                            style={[styles.sidePill, side === "YES" ? styles.yesPillActive : styles.pillInactive]}
+                            style={[styles.sidePill, side === "YES" ? styles.yesPillActive : styles.pillInactive, interactionLocked && styles.disabledPill]}
                             onPress={() => setSide("YES")}
+                            disabled={interactionLocked}
                         >
                             <Text style={[styles.pillText, side === "YES" && styles.pillTextActive]}>
                                 Yes {(market.yesPrice * 100).toFixed(0)}¢
                             </Text>
                         </Pressable>
                         <Pressable
-                            style={[styles.sidePill, side === "NO" ? styles.noPillActive : styles.pillInactive]}
+                            style={[styles.sidePill, side === "NO" ? styles.noPillActive : styles.pillInactive, interactionLocked && styles.disabledPill]}
                             onPress={() => setSide("NO")}
+                            disabled={interactionLocked}
                         >
                             <Text style={[styles.pillText, side === "NO" && styles.pillTextActive]}>
                                 No {((1 - market.yesPrice) * 100).toFixed(0)}¢
@@ -444,7 +533,34 @@ export function TradePanel({
                         </Pressable>
                     </View>
 
-                    {/* Potential Win Display */}
+                    {tradeMode === "SELL" && matchingPositions.length > 1 && (
+                        <View style={styles.positionSelectorSection}>
+                            <Text style={styles.positionSelectorTitle}>Position to sell</Text>
+                            {matchingPositions.map((position) => {
+                                const avgPrice = position.amount > 0 ? position.costBasis / position.amount : 0;
+                                const isSelected = position.mint === selectedPositionId;
+                                return (
+                                    <Pressable
+                                        key={position.mint}
+                                        style={[styles.positionOption, isSelected && styles.positionOptionSelected]}
+                                        onPress={() => setSelectedPositionId(position.mint)}
+                                        disabled={interactionLocked}
+                                    >
+                                        <View>
+                                            <Text style={[styles.positionOptionValue, isSelected && styles.positionOptionValueSelected]}>
+                                                {position.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })} shares
+                                            </Text>
+                                            <Text style={styles.positionOptionMeta}>
+                                                Avg {avgPrice.toFixed(2)} USD
+                                            </Text>
+                                        </View>
+                                        <Text style={styles.positionOptionId}>{formatPositionId(position.mint)}</Text>
+                                    </Pressable>
+                                );
+                            })}
+                        </View>
+                    )}
+
                     <View style={styles.toWinContainer}>
                         <Text style={styles.toWinLabel}>{tradeMode === "BUY" ? "To Win" : "To Receive"}</Text>
                         <Text style={styles.toWinValue}>
@@ -452,10 +568,9 @@ export function TradePanel({
                         </Text>
                     </View>
 
-                    {/* Technical Details Accordion */}
                     <Pressable
                         style={styles.detailsHeader}
-                        onPress={() => setShowDetails(!showDetails)}
+                        onPress={() => setShowDetails((prev) => !prev)}
                     >
                         <Text style={styles.detailsHeaderText}>Order Details</Text>
                         <ChevronDown color="#999" size={16} style={{ transform: [{ rotate: showDetails ? "180deg" : "0deg" }] }} />
@@ -476,44 +591,57 @@ export function TradePanel({
                         </View>
                     )}
 
-                    {/* Quick Amounts */}
                     <View style={styles.quickAmountsRow}>
-                        {quickButtons.map((val) => (
-                            <Pressable key={val} style={styles.quickBtn} onPress={() => handleQuickAmount(val)}>
-                                <Text style={styles.quickBtnText}>{val}</Text>
+                        {quickButtons.map((value) => (
+                            <Pressable
+                                key={value}
+                                style={[styles.quickBtn, interactionLocked && styles.quickBtnDisabled]}
+                                onPress={() => handleQuickAmount(value)}
+                                disabled={interactionLocked}
+                            >
+                                <Text style={styles.quickBtnText}>{value}</Text>
                             </Pressable>
                         ))}
                     </View>
 
-                    {/* Numeric Keypad */}
                     <View style={styles.keypad}>
-                        {[["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], [".", "0", "backspace"]].map((row, i) => (
-                            <View key={i} style={styles.keypadRow}>
-                                {row.map((key) => (
-                                    <Pressable
-                                        key={key}
-                                        style={[styles.key, (key === "backspace" || key === ".") && styles.keySpecial]}
-                                        onPress={() => handleKeyPress(key)}
-                                    >
-                                        {key === "backspace" ? (
-                                            <Delete color="#000" size={20} />
-                                        ) : (
-                                            <Text style={styles.keyText}>{key}</Text>
-                                        )}
-                                    </Pressable>
-                                ))}
+                        {keypadRows.map((row, index) => (
+                            <View key={index} style={styles.keypadRow}>
+                                {row.map((key) => {
+                                    const isBlankKey = key === "";
+                                    return (
+                                        <Pressable
+                                            key={`${index}-${key || "blank"}`}
+                                            style={[
+                                                styles.key,
+                                                (key === "backspace" || key === "." || isBlankKey) && styles.keySpecial,
+                                                interactionLocked && styles.keyDisabled,
+                                            ]}
+                                            onPress={() => {
+                                                if (!isBlankKey) handleKeyPress(key);
+                                            }}
+                                            disabled={interactionLocked || isBlankKey}
+                                        >
+                                            {key === "backspace" ? (
+                                                <Delete color="#000" size={20} />
+                                            ) : (
+                                                <Text style={styles.keyText}>{key}</Text>
+                                            )}
+                                        </Pressable>
+                                    );
+                                })}
                             </View>
                         ))}
                     </View>
                 </View>
 
-                {/* Sticky Swipe Action Footer */}
                 <View style={styles.actionFixedFooter}>
                     <SwipeToBuy
                         onSwipe={handleTrade}
                         isLoading={isLoading}
                         disabled={isButtonDisabled}
                         label={swipeLabel}
+                        resetTrigger={resetTrigger}
                     />
                 </View>
 
@@ -691,6 +819,9 @@ const styles = StyleSheet.create({
     pillInactive: {
         backgroundColor: "#D4D4D4",
     },
+    disabledPill: {
+        opacity: 0.55,
+    },
     pillText: {
         fontSize: 16,
         fontWeight: "700",
@@ -698,6 +829,50 @@ const styles = StyleSheet.create({
     },
     pillTextActive: {
         color: "#fff",
+    },
+    positionSelectorSection: {
+        marginBottom: 10,
+        gap: 6,
+    },
+    positionSelectorTitle: {
+        fontSize: 13,
+        fontWeight: "700",
+        color: "#171717",
+    },
+    positionOption: {
+        backgroundColor: "#fff",
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: "rgba(0, 0, 0, 0.12)",
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+    },
+    positionOptionSelected: {
+        borderColor: "#171717",
+        backgroundColor: "#F2F2F7",
+    },
+    positionOptionValue: {
+        fontSize: 14,
+        fontWeight: "700",
+        color: "#171717",
+    },
+    positionOptionValueSelected: {
+        color: "#000",
+    },
+    positionOptionMeta: {
+        fontSize: 12,
+        fontWeight: "600",
+        color: "#6B7280",
+        marginTop: 2,
+    },
+    positionOptionId: {
+        fontSize: 12,
+        fontWeight: "700",
+        color: "#6B7280",
     },
     toWinContainer: {
         borderWidth: 2,
@@ -769,6 +944,9 @@ const styles = StyleSheet.create({
         justifyContent: "center",
         alignItems: "center",
     },
+    quickBtnDisabled: {
+        opacity: 0.55,
+    },
     quickBtnText: {
         fontSize: 16,
         fontWeight: "700",
@@ -796,6 +974,9 @@ const styles = StyleSheet.create({
     },
     keySpecial: {
         backgroundColor: "transparent",
+    },
+    keyDisabled: {
+        opacity: 0.55,
     },
     actionFixedFooter: {
         paddingHorizontal: CONTENT_HORIZONTAL_PADDING,

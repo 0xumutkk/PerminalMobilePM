@@ -15,6 +15,7 @@ import {
 const extra = Constants.expoConfig?.extra ?? {};
 const JUPITER_API_KEY = (extra.jupiterApiKey ?? process.env.EXPO_PUBLIC_JUPITER_API_KEY ?? "").trim();
 const JUPITER_BASE_URL = "https://api.jup.ag/prediction/v1";
+const MIN_BUY_ORDER_MESSAGE = "Minimum order is above $1.00 on Jupiter. Try $1.01 or more.";
 
 function getHeaders(): HeadersInit {
     const headers: HeadersInit = {
@@ -23,6 +24,30 @@ function getHeaders(): HeadersInit {
     };
     if (JUPITER_API_KEY) headers["x-api-key"] = JUPITER_API_KEY;
     return headers;
+}
+
+function formatJupiterApiError(status: number, errorText: string): string {
+    const trimmed = errorText.trim();
+    if (!trimmed) {
+        return `Jupiter trade failed (${status}).`;
+    }
+
+    try {
+        const parsed = JSON.parse(trimmed) as { message?: string; code?: string; type?: string };
+        const message = String(parsed.message ?? "").trim();
+        if (/minimum order is \$?1\b/i.test(message)) {
+            return MIN_BUY_ORDER_MESSAGE;
+        }
+        if (message) {
+            return message;
+        }
+    } catch {
+        if (/minimum order is \$?1\b/i.test(trimmed)) {
+            return MIN_BUY_ORDER_MESSAGE;
+        }
+    }
+
+    return `Jupiter trade failed (${status}): ${trimmed}`;
 }
 
 export interface JupiterTradeServiceProps {
@@ -42,6 +67,11 @@ export interface JupiterTradeServiceProps {
      * Get an order by ID (e.g. to poll status)
      */
     getOrder(orderId: string): Promise<JupiterOrder>;
+
+    /**
+     * Get an order by pubkey to track fill status after tx confirmation.
+     */
+    getOrderStatus(orderPubkey: string): Promise<JupiterOrder>;
 
     /**
      * Utility method for buying
@@ -64,7 +94,7 @@ export interface JupiterTradeServiceProps {
         side: "YES" | "NO";
         contracts: number; // Quantity of shares to sell
         minSellPriceUsd?: number;
-        positionPubkey?: string;
+        positionPubkey: string;
         slippageBps?: number;
     }): Promise<JupiterCreateOrderResponse>;
 }
@@ -83,7 +113,7 @@ export const jupiterTradeService: JupiterTradeServiceProps = {
             // Use warn instead of error to avoid triggering the global crash handler/redbox in dev
             console.warn(`[JupiterTrade] API returned ${res.status}. Body: ${errorText}`);
             console.warn(`[JupiterTrade] Failed Payload:`, JSON.stringify(req));
-            throw new Error(`Jupiter trade failed (${res.status}): ${errorText || "Unknown error"}`);
+            throw new Error(formatJupiterApiError(res.status, errorText));
         }
 
         return (await res.json()) as JupiterCreateOrderResponse;
@@ -110,6 +140,16 @@ export const jupiterTradeService: JupiterTradeServiceProps = {
         if (!res.ok) {
             const errorText = await res.text().catch(() => "");
             throw new Error(`Failed to fetch Jupiter order (HTTP ${res.status}): ${errorText}`);
+        }
+        return (await res.json()) as JupiterOrder;
+    },
+
+    async getOrderStatus(orderPubkey: string): Promise<JupiterOrder> {
+        const url = `${JUPITER_BASE_URL}/orders/status/${encodeURIComponent(orderPubkey)}`;
+        const res = await fetch(url, { headers: getHeaders() });
+        if (!res.ok) {
+            const errorText = await res.text().catch(() => "");
+            throw new Error(`Failed to fetch Jupiter order status (HTTP ${res.status}): ${errorText}`);
         }
         return (await res.json()) as JupiterOrder;
     },

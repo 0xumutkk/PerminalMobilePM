@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { StyleSheet, View, Text, LayoutChangeEvent, Platform } from "react-native";
+import { StyleSheet, View, Text, LayoutChangeEvent } from "react-native";
 import { GestureDetector, Gesture } from "react-native-gesture-handler";
 import Animated, {
     useAnimatedStyle,
@@ -19,13 +19,20 @@ interface SwipeToBuyProps {
     isLoading?: boolean;
     disabled?: boolean;
     label?: string;
+    resetTrigger?: string | number;
 }
 
 const BUTTON_HEIGHT = 56;
 const TOGGLE_SIZE = 46;
 const PADDING = 5;
 
-export function SwipeToBuy({ onSwipe, isLoading, disabled, label = "Swipe to buy" }: SwipeToBuyProps) {
+export function SwipeToBuy({
+    onSwipe,
+    isLoading,
+    disabled,
+    label = "Swipe to buy",
+    resetTrigger,
+}: SwipeToBuyProps) {
     const translateX = useSharedValue(0);
     const [swiped, setSwiped] = useState(false);
     const [width, setWidth] = useState(0);
@@ -71,13 +78,18 @@ export function SwipeToBuy({ onSwipe, isLoading, disabled, label = "Swipe to buy
         return { opacity };
     });
 
-    // Reset if disabled or amount cleared
+    // Reset when the caller invalidates the current swipe or the CTA becomes disabled.
     React.useEffect(() => {
         if (disabled && swiped) {
             translateX.value = withTiming(0);
             setSwiped(false);
         }
-    }, [disabled, swiped]);
+    }, [disabled, swiped, translateX]);
+
+    React.useEffect(() => {
+        translateX.value = withTiming(0);
+        setSwiped(false);
+    }, [resetTrigger, translateX]);
 
     return (
         <View
