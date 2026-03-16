@@ -4,9 +4,11 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
 import { usePrivy } from "@privy-io/expo";
+import { useAuth } from "../../../hooks/useAuth";
 import { useTrade } from "../../../hooks/useTrade";
 import { useProfile } from "../../../hooks/useProfile";
 import { useFollowCounts } from "../../../hooks/useFollowCounts";
+import { useJupiterPortfolioPerformance } from "../../../hooks/useJupiterPortfolioPerformance";
 import PortfolioTab from "../../../components/profile/PortfolioTab";
 import { ProfilePostsTab } from "../../../components/profile/ProfilePostsTab";
 import {
@@ -18,9 +20,18 @@ import { BottomProgressiveBlur } from "../../../components/ui/BottomProgressiveB
 export default function ProfileScreen() {
     const router = useRouter();
     const { logout } = usePrivy();
+    const { activeWallet } = useAuth();
     const { profile, isLoading: profileLoading } = useProfile();
     const { usdcBalance, fetchBalance } = useTrade();
     const { followersCount, followingCount, refresh: refreshFollowCounts } = useFollowCounts(profile?.id ?? null);
+    const {
+        balanceSeries,
+        isLoading: performanceLoading,
+        range: performanceRange,
+        realizedPnlUsd,
+        refresh: refreshPerformance,
+        setRange: setPerformanceRange,
+    } = useJupiterPortfolioPerformance(activeWallet?.address ?? null);
     const [activeTab, setActiveTab] = useState<"Portfolio" | "Posts">("Portfolio");
 
     const formatCount = (count: number | null | undefined, isTrades = false) => {
@@ -41,6 +52,7 @@ export default function ProfileScreen() {
         await Promise.all([
             fetchBalance(),
             refreshFollowCounts(),
+            refreshPerformance(),
         ]);
     };
 
@@ -58,7 +70,7 @@ export default function ProfileScreen() {
                     </View>
                 </View>
                 <View style={styles.navbarActions}>
-                    <TouchableOpacity style={styles.navButton}>
+                    <TouchableOpacity style={styles.navButton} onPress={() => router.push("/profile/history")}>
                         <Clock size={20} color="#000" strokeWidth={1.8} />
                     </TouchableOpacity>
                     <TouchableOpacity style={styles.navButton} onPress={handleLogout}>
@@ -117,8 +129,12 @@ export default function ProfileScreen() {
             {/* Tab Content */}
             {activeTab === "Portfolio" ? (
                 <PortfolioTab
+                    balanceSeries={balanceSeries}
+                    isPerformanceLoading={performanceLoading}
+                    performanceRange={performanceRange}
+                    realizedPnlUsd={realizedPnlUsd}
+                    onPerformanceRangeChange={setPerformanceRange}
                     usdcBalance={usdcBalance}
-                    profilePnl={profile?.pnl}
                     onRefresh={handleProfileRefresh}
                 />
             ) : (

@@ -9,26 +9,36 @@ import {
     RefreshControl,
 } from "react-native";
 import { useRouter } from "expo-router";
-import { Image } from "expo-image";
 import { ChevronDown, Wallet, CircleDollarSign, ArrowUpDown } from "lucide-react-native";
+import { MarketChartNative } from "../MarketChartNative";
 import { usePositions } from "../../hooks/usePositions";
+import type { PortfolioPerformanceRange } from "../../hooks/useJupiterPortfolioPerformance";
+import type { ChartPoint } from "../../lib/mock-data";
 import PositionCard from "./PositionCard";
 
 interface PortfolioTabProps {
+    balanceSeries: ChartPoint[];
+    isPerformanceLoading?: boolean;
+    performanceRange: PortfolioPerformanceRange;
+    realizedPnlUsd?: number | null;
+    onPerformanceRangeChange: (range: PortfolioPerformanceRange) => void;
     usdcBalance: number | null;
-    profilePnl?: number | null;
     onRefresh?: () => void;
 }
 
-const CHART_LINE_IMAGE = "https://www.figma.com/api/mcp/asset/5bebb86c-75a2-497b-b62d-00d1018b8f9f";
-const TIME_RANGES = ["1H", "6H", "1D", "1W", "1M", "ALL"];
-
-export default function PortfolioTab({ usdcBalance, profilePnl, onRefresh }: PortfolioTabProps) {
+export default function PortfolioTab({
+    balanceSeries,
+    isPerformanceLoading = false,
+    performanceRange,
+    realizedPnlUsd,
+    onPerformanceRangeChange,
+    usdcBalance,
+    onRefresh,
+}: PortfolioTabProps) {
     const router = useRouter();
     const { activePositions, closedPositions, isLoading, refresh: refreshPositions } = usePositions();
     const [activeExpanded, setActiveExpanded] = useState(true);
     const [closedExpanded, setClosedExpanded] = useState(false);
-    const [timeRange, setTimeRange] = useState("ALL");
 
     const onPullToRefresh = async () => {
         await Promise.all([
@@ -60,6 +70,13 @@ export default function PortfolioTab({ usdcBalance, profilePnl, onRefresh }: Por
         [closedPositions]
     );
 
+    const chartColor = useMemo(() => {
+        if (balanceSeries.length >= 2) {
+            return balanceSeries[balanceSeries.length - 1].value >= balanceSeries[0].value ? "#34c759" : "#ef4444";
+        }
+        return typeof realizedPnlUsd === "number" && realizedPnlUsd < 0 ? "#ef4444" : "#34c759";
+    }, [balanceSeries, realizedPnlUsd]);
+
     const formatValue = (val: number) => {
         if (val >= 1_000_000) return `$${(val / 1_000_000).toFixed(2)}M`;
         if (val >= 1_000) return `$${(val / 1_000).toFixed(2)}K`;
@@ -73,52 +90,55 @@ export default function PortfolioTab({ usdcBalance, profilePnl, onRefresh }: Por
             maximumFractionDigits: 2,
         })}`;
     };
+    const performanceLabel = performanceRange === "ALL" ? "ALL-TIME" : performanceRange;
 
     return (
         <ScrollView
             style={styles.container}
             showsVerticalScrollIndicator={false}
             refreshControl={
-                <RefreshControl refreshing={isLoading} onRefresh={onPullToRefresh} tintColor="#34c759" />
+                <RefreshControl refreshing={isLoading || isPerformanceLoading} onRefresh={onPullToRefresh} tintColor="#34c759" />
             }
         >
             <View style={styles.valueSection}>
                 <View style={styles.valueHeader}>
-                    <Text style={styles.totalValue}>
-                        ${totalPortfolioValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </Text>
-                    <View style={styles.pnlRow}>
-                        <Text
-                            style={[
-                                styles.pnlText,
-                                typeof profilePnl === "number" && profilePnl < 0 ? styles.pnlTextNegative : null,
-                            ]}
-                        >
-                            {formatSignedPnl(profilePnl)}
+                    <View style={styles.primaryMetric}>
+                        <Text style={styles.metricCaption}>Portfolio Value</Text>
+                        <Text style={styles.totalValue}>
+                            ${totalPortfolioValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </Text>
-                        <Text style={styles.pnlLabel}>All</Text>
+                    </View>
+                    <View style={styles.pnlRow}>
+                        <Text style={styles.metricCaption}>Realized PnL</Text>
+                        <View style={styles.pnlValueRow}>
+                            <Text
+                                style={[
+                                    styles.pnlText,
+                                    typeof realizedPnlUsd === "number" && realizedPnlUsd < 0 ? styles.pnlTextNegative : null,
+                                ]}
+                            >
+                                {formatSignedPnl(realizedPnlUsd)}
+                            </Text>
+                            <Text style={styles.pnlLabel}>{performanceLabel}</Text>
+                        </View>
                     </View>
                 </View>
 
                 <View style={styles.chartContainer}>
-                    {[0, 1, 2, 3, 4].map((i) => (
-                        <View key={i} style={[styles.gridLine, { top: i * (177 / 4) }]} />
-                    ))}
-                    <Image source={{ uri: CHART_LINE_IMAGE }} style={styles.chartImage} contentFit="contain" />
-                </View>
-
-                <View style={styles.timeRangeContainer}>
-                    {TIME_RANGES.map((range) => (
-                        <TouchableOpacity
-                            key={range}
-                            onPress={() => setTimeRange(range)}
-                            style={[styles.rangeButton, timeRange === range && styles.rangeButtonActive]}
-                        >
-                            <Text style={[styles.rangeButtonText, timeRange === range && styles.rangeButtonTextActive]}>
-                                {range}
-                            </Text>
-                        </TouchableOpacity>
-                    ))}
+                    <MarketChartNative
+                        data={balanceSeries}
+                        color={chartColor}
+                        activeRange={performanceRange}
+                        onRangeChange={(range) => onPerformanceRangeChange(range as PortfolioPerformanceRange)}
+                        valueType="price"
+                        curveType="step"
+                        hideHeader
+                    />
+                    {isPerformanceLoading ? (
+                        <View style={styles.chartLoadingOverlay} pointerEvents="none">
+                            <ActivityIndicator color={chartColor} />
+                        </View>
+                    ) : null}
                 </View>
             </View>
 
@@ -242,6 +262,16 @@ const styles = StyleSheet.create({
         paddingHorizontal: 16,
         paddingTop: 8,
     },
+    primaryMetric: {
+        gap: 4,
+    },
+    metricCaption: {
+        color: "rgba(0,0,0,0.45)",
+        fontSize: 11,
+        fontWeight: "700",
+        letterSpacing: 0.3,
+        textTransform: "uppercase",
+    },
     totalValue: {
         color: "#000",
         fontSize: 24,
@@ -249,6 +279,10 @@ const styles = StyleSheet.create({
         letterSpacing: -0.6,
     },
     pnlRow: {
+        alignItems: "flex-end",
+        gap: 4,
+    },
+    pnlValueRow: {
         flexDirection: "row",
         alignItems: "flex-end",
     },
@@ -266,57 +300,17 @@ const styles = StyleSheet.create({
         fontWeight: "700",
     },
     chartContainer: {
-        height: 177,
-        marginTop: 37,
+        minHeight: 248,
+        marginTop: 12,
         marginHorizontal: 8,
         position: "relative",
     },
-    chartImage: {
+    chartLoadingOverlay: {
         position: "absolute",
-        left: 0,
-        right: 0,
-        bottom: 0,
-        height: 114,
-    },
-    gridLine: {
-        position: "absolute",
-        left: 0,
-        right: 0,
-        height: 1,
-        borderStyle: "dashed",
-        borderWidth: 1,
-        borderColor: "rgba(0,0,0,0.28)",
-        opacity: 0.4,
-        backgroundColor: "transparent",
-    },
-    timeRangeContainer: {
-        flexDirection: "row",
+        top: 20,
+        right: 20,
         justifyContent: "center",
         alignItems: "center",
-        gap: 4,
-        marginTop: 16,
-        height: 24,
-    },
-    rangeButton: {
-        width: 59,
-        height: 24,
-        borderRadius: 28,
-        backgroundColor: "#fff",
-        borderWidth: 1,
-        borderColor: "rgba(0,0,0,0.15)",
-        alignItems: "center",
-        justifyContent: "center",
-    },
-    rangeButtonActive: {
-        backgroundColor: "#34c759",
-    },
-    rangeButtonText: {
-        color: "#000",
-        fontSize: 12,
-        fontWeight: "700",
-    },
-    rangeButtonTextActive: {
-        color: "#fff",
     },
     summaryContainer: {
         flexDirection: "row",

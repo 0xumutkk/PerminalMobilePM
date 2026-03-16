@@ -34,6 +34,15 @@ function isSettledStatus(status?: string | null): boolean {
     return SETTLED_STATUS_KEYWORDS.some((keyword) => normalized.includes(keyword));
 }
 
+function parseFiniteNumber(value: unknown): number | null {
+    if (typeof value === "number") return Number.isFinite(value) ? value : null;
+    if (typeof value !== "string") return null;
+    const normalized = value.replace(/,/g, "").trim();
+    if (!normalized) return null;
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
 export function usePositions() {
     const { activeWallet } = useAuth();
     const [activePositions, setActivePositions] = useState<Position[]>([]);
@@ -59,11 +68,21 @@ export function usePositions() {
             const discoveredPositions: Position[] = jupPositions.map((pos) => {
                 const amount = parseFloat(pos.contracts || "0");
                 const avgPrice = microUsdToUsd(pos.avgPriceUsd);
-                const currentPrice = pos.markPriceUsd != null ? microUsdToUsd(pos.markPriceUsd) : avgPrice;
-                const costBasis = microUsdToUsd(pos.sizeUsd) || (amount * avgPrice);
-                const currentValue = microUsdToUsd(pos.valueUsd) || (amount * currentPrice);
-                const pnl = microUsdToUsd(pos.pnlUsd) || (currentValue - costBasis);
-                const pnlPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
+                const currentPrice = pos.currentPriceUsd != null
+                    ? microUsdToUsd(pos.currentPriceUsd)
+                    : pos.markPriceUsd != null
+                        ? microUsdToUsd(pos.markPriceUsd)
+                        : avgPrice;
+                const costBasis = pos.costBasisUsd != null
+                    ? microUsdToUsd(pos.costBasisUsd)
+                    : amount * avgPrice;
+                const currentValue = pos.valueUsd != null
+                    ? microUsdToUsd(pos.valueUsd)
+                    : amount * currentPrice;
+                const pnl = pos.pnlUsd != null
+                    ? microUsdToUsd(pos.pnlUsd)
+                    : currentValue - costBasis;
+                const pnlPct = parseFiniteNumber(pos.pnlUsdPercent) ?? (costBasis > 0 ? (pnl / costBasis) * 100 : 0);
 
                 const result = pos.marketResult?.toLowerCase() || "";
                 const hasResult = result === "yes" || result === "no";

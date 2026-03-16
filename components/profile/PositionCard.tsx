@@ -24,6 +24,7 @@ export default function PositionCard({ position, onPress }: PositionCardProps) {
     const sideLabel = position.side === "YES" ? "Yes" : "No";
     const sideBadgeStyle = position.side === "YES" ? styles.yesBg : styles.noBg;
     const cents = Math.round(position.currentPrice * 100);
+    const shareCount = position.amount.toLocaleString(undefined, { maximumFractionDigits: 2 });
 
     return (
         <Pressable style={styles.container} onPress={onPress}>
@@ -40,13 +41,17 @@ export default function PositionCard({ position, onPress }: PositionCardProps) {
                             <View style={[styles.sideBadge, sideBadgeStyle]}>
                                 <Text style={styles.sideText}>{sideLabel}</Text>
                             </View>
-                            <Text style={styles.subText}>Shares at {cents}¢</Text>
+                            <Text style={styles.subText}>Shares</Text>
                         </View>
                     </View>
 
                     <View style={styles.rightSide}>
+                        <Text style={styles.valueLabel}>Worth</Text>
                         <Text style={styles.valueText}>
                             ${formatCompactNumber(position.currentValue)}
+                        </Text>
+                        <Text style={styles.formulaText}>
+                            {shareCount} x {cents}c
                         </Text>
                         <Text style={[styles.pnlText, isPositive ? styles.pnlPositive : styles.pnlNegative]}>
                             {isPositive ? "+" : "-"}${Math.abs(position.pnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -120,12 +125,24 @@ const styles = StyleSheet.create({
     },
     rightSide: {
         alignItems: "flex-end",
-        gap: 8,
+        gap: 4,
+    },
+    valueLabel: {
+        color: "#000",
+        fontSize: 11,
+        fontWeight: "600",
+        opacity: 0.45,
     },
     valueText: {
         color: "#000",
         fontSize: 16,
         fontWeight: "700",
+    },
+    formulaText: {
+        color: "#000",
+        fontSize: 11,
+        fontWeight: "600",
+        opacity: 0.45,
     },
     pnlText: {
         fontSize: 12,
