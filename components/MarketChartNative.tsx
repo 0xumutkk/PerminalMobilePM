@@ -7,6 +7,7 @@ import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withTiming } from 
 import { type ChartPoint } from "../lib/mock-data";
 
 export type ChartValueType = "probability" | "price";
+export type ChartCurveType = "smooth" | "linear" | "monotone" | "step";
 
 export interface MarketChartLineSeries {
     key: string;
@@ -22,8 +23,10 @@ export interface MarketChartNativeProps {
     activeRange?: string;
     onRangeChange?: (range: string) => void;
     valueType?: ChartValueType;
+    curveType?: ChartCurveType;
     assetLabel?: string;
     headlineValue?: number;
+    hideHeader?: boolean;
 }
 
 const MAX_POINTS = 60;
@@ -208,6 +211,94 @@ function smoothPath(points: { x: number; y: number }[]): string {
     return d;
 }
 
+function linearPath(points: { x: number; y: number }[]): string {
+    if (points.length < 2) return "";
+
+    let d = `M ${points[0].x} ${points[0].y}`;
+    for (let index = 1; index < points.length; index += 1) {
+        d += ` L ${points[index].x} ${points[index].y}`;
+    }
+
+    return d;
+}
+
+function monotonePath(points: { x: number; y: number }[]): string {
+    if (points.length < 2) return "";
+    if (points.length === 2) return linearPath(points);
+
+    const slopes: number[] = [];
+    for (let index = 0; index < points.length - 1; index += 1) {
+        const dx = points[index + 1].x - points[index].x;
+        if (Math.abs(dx) < 1e-6) {
+            slopes.push(0);
+            continue;
+        }
+        slopes.push((points[index + 1].y - points[index].y) / dx);
+    }
+
+    const tangents: number[] = [slopes[0]];
+    for (let index = 1; index < points.length - 1; index += 1) {
+        const previousSlope = slopes[index - 1];
+        const nextSlope = slopes[index];
+
+        if (previousSlope === 0 || nextSlope === 0 || previousSlope * nextSlope < 0) {
+            tangents.push(0);
+            continue;
+        }
+
+        tangents.push((previousSlope + nextSlope) / 2);
+    }
+    tangents.push(slopes[slopes.length - 1]);
+
+    for (let index = 0; index < slopes.length; index += 1) {
+        const slope = slopes[index];
+        if (slope === 0) {
+            tangents[index] = 0;
+            tangents[index + 1] = 0;
+            continue;
+        }
+
+        const alpha = tangents[index] / slope;
+        const beta = tangents[index + 1] / slope;
+        const magnitude = alpha * alpha + beta * beta;
+
+        if (magnitude > 9) {
+            const scale = 3 / Math.sqrt(magnitude);
+            tangents[index] = scale * alpha * slope;
+            tangents[index + 1] = scale * beta * slope;
+        }
+    }
+
+    let d = `M ${points[0].x} ${points[0].y}`;
+    for (let index = 0; index < points.length - 1; index += 1) {
+        const currentPoint = points[index];
+        const nextPoint = points[index + 1];
+        const dx = nextPoint.x - currentPoint.x;
+
+        const cp1x = currentPoint.x + dx / 3;
+        const cp1y = currentPoint.y + (tangents[index] * dx) / 3;
+        const cp2x = nextPoint.x - dx / 3;
+        const cp2y = nextPoint.y - (tangents[index + 1] * dx) / 3;
+
+        d += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${nextPoint.x} ${nextPoint.y}`;
+    }
+
+    return d;
+}
+
+function stepPath(points: { x: number; y: number }[]): string {
+    if (points.length < 2) return "";
+
+    let d = `M ${points[0].x} ${points[0].y}`;
+    for (let index = 1; index < points.length; index += 1) {
+        const previousPoint = points[index - 1];
+        const currentPoint = points[index];
+        d += ` L ${currentPoint.x} ${previousPoint.y} L ${currentPoint.x} ${currentPoint.y}`;
+    }
+
+    return d;
+}
+
 function buildAreaPath(points: { x: number; y: number }[], linePath: string, baselineY: number): string {
     if (!linePath || points.length < 2) return "";
     const first = points[0];
@@ -216,7 +307,11 @@ function buildAreaPath(points: { x: number; y: number }[], linePath: string, bas
     return `${linePath} L ${last.x} ${baselineY} L ${first.x} ${baselineY} Z`;
 }
 
-function interpolateSeriesAtX(series: SeriesGeometry, targetX: number): InterpolatedPoint | null {
+function interpolateSeriesAtX(
+    series: SeriesGeometry,
+    targetX: number,
+    curveType: ChartCurveType = "smooth"
+): InterpolatedPoint | null {
     const { screenPoints, sampled } = series;
     if (screenPoints.length === 0 || sampled.length === 0) return null;
 
@@ -261,6 +356,17 @@ function interpolateSeriesAtX(series: SeriesGeometry, targetX: number): Interpol
         }
 
         const ratio = (clampedX - currentPoint.x) / xRange;
+
+        if (curveType === "step") {
+            const isAtSegmentEnd = ratio >= 0.999;
+            return {
+                x: clampedX,
+                y: isAtSegmentEnd ? nextPoint.y : currentPoint.y,
+                timestamp: currentSample.timestamp + (nextSample.timestamp - currentSample.timestamp) * ratio,
+                value: isAtSegmentEnd ? nextSample.value : currentSample.value,
+            };
+        }
+
         return {
             x: clampedX,
             y: currentPoint.y + (nextPoint.y - currentPoint.y) * ratio,
@@ -305,8 +411,10 @@ export function MarketChartNative({
     activeRange = "ALL",
     onRangeChange,
     valueType = "probability",
+    curveType = "smooth",
     assetLabel,
     headlineValue,
+    hideHeader = false,
 }: MarketChartNativeProps) {
     const chartWidth = Dimensions.get("window").width - 16;
     const chartHeight = 200;
@@ -380,7 +488,15 @@ export function MarketChartNative({
     }));
 
     const singlePoints = toScreenPoints(sampledSingle, padding, innerWidth, innerHeight, yMin, yRange, startTs, endTs);
-    const singlePath = smoothPath(singlePoints);
+    const buildPath =
+        curveType === "linear"
+            ? linearPath
+            : curveType === "monotone"
+                ? monotonePath
+                : curveType === "step"
+                    ? stepPath
+                    : smoothPath;
+    const singlePath = buildPath(singlePoints);
     const singleFallback = (() => {
         if (singlePoints.length === 0) return "";
         if (singlePoints.length === 1) {
@@ -411,7 +527,7 @@ export function MarketChartNative({
 
     const clusteredPaths = clusteredGeometries.map((item) => {
         const points = item.screenPoints;
-        const pathD = smoothPath(points);
+        const pathD = buildPath(points);
         const fallback = (() => {
             if (points.length === 0) return "";
             if (points.length === 1) {
@@ -473,7 +589,7 @@ export function MarketChartNative({
                 : null;
 
             if (lockedGeometry) {
-                const interpolated = interpolateSeriesAtX(lockedGeometry, clampedX);
+                const interpolated = interpolateSeriesAtX(lockedGeometry, clampedX, curveType);
                 if (interpolated) {
                     nextSelection = {
                         seriesKey: lockedGeometry.key,
@@ -491,7 +607,7 @@ export function MarketChartNative({
             let nearestMatch: { geometry: SeriesGeometry; interpolated: InterpolatedPoint; distance: number } | null = null;
 
                 for (const geometry of clusteredGeometries) {
-                    const interpolated = interpolateSeriesAtX(geometry, clampedX);
+                    const interpolated = interpolateSeriesAtX(geometry, clampedX, curveType);
                     if (!interpolated) continue;
                     const distance = Math.abs(interpolated.y - clampedY);
                     if (!nearestMatch || distance < nearestMatch.distance) {
@@ -513,7 +629,7 @@ export function MarketChartNative({
                 }
             }
         } else if (singleGeometry) {
-            const interpolated = interpolateSeriesAtX(singleGeometry, clampedX);
+            const interpolated = interpolateSeriesAtX(singleGeometry, clampedX, curveType);
             if (interpolated) {
                 nextSelection = {
                     seriesKey: singleGeometry.key,
@@ -599,7 +715,7 @@ export function MarketChartNative({
 
     return (
         <View style={styles.container}>
-            {!clusteredMode ? (
+            {!clusteredMode && !hideHeader ? (
                 <View style={styles.headerRow}>
                     <View style={styles.priceContainer}>
                         <Text style={styles.priceText}>{currentPrimaryText}</Text>

@@ -13,6 +13,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { StatusBar } from "expo-status-bar";
+import * as Clipboard from "expo-clipboard";
 import { useRouter, useNavigation } from "expo-router";
 import { useEmbeddedSolanaWallet, isConnected } from "@privy-io/expo";
 import { useFundSolanaWallet } from "@privy-io/expo/ui";
@@ -59,6 +60,8 @@ const CATEGORY_PRIORITY = [
     "Science and Technology",
 ];
 const MIN_VISIBLE_VOLUME = 0;
+const POPULAR_GROUP_BATCH_SIZE = 15;
+const CATEGORY_GROUP_BATCH_SIZE = 100;
 const ODDS_SORT_OPTIONS = [
     { key: "ticker", label: "Ticker" },
     { key: "price", label: "Price" },
@@ -125,6 +128,21 @@ function getPopularityScore(market: Market): number {
     // Heavily weight recent 24h volume (e.g. 10x) vs historical volume to surface truly trending markets
     const score = (v24h * 10) + v;
     return Number.isFinite(score) ? score : 0;
+}
+
+function buildPopularEventOrder(markets: Market[]): string[] {
+    const sortedByScore = [...markets].sort((a, b) => getPopularityScore(b) - getPopularityScore(a));
+    const seenEventIds = new Set<string>();
+    const orderedEventIds: string[] = [];
+
+    for (const market of sortedByScore) {
+        const eventId = market.eventId || market.id;
+        if (seenEventIds.has(eventId)) continue;
+        seenEventIds.add(eventId);
+        orderedEventIds.push(eventId);
+    }
+
+    return orderedEventIds;
 }
 
 function getMarketTextBundle(market: Market): string {
@@ -292,6 +310,8 @@ export default function HomeFeed() {
 
     const [nextCursor, setNextCursor] = useState<string | null>(null);
     const [isFetchingMore, setIsFetchingMore] = useState(false);
+    const [visibleGroupLimit, setVisibleGroupLimit] = useState(POPULAR_GROUP_BATCH_SIZE);
+    const [popularEventOrder, setPopularEventOrder] = useState<string[]>([]);
 
     const handleOpenTrade = (market: Market, side: TradeSide) => {
         setTradingMarket(market);
@@ -311,6 +331,18 @@ export default function HomeFeed() {
         setIsDepositModalVisible(true);
     };
 
+    const handleCopyPrimaryAddress = useCallback(async () => {
+        if (!primaryAddress) return;
+
+        try {
+            await Clipboard.setStringAsync(primaryAddress);
+            Alert.alert("Copied", "Address copied to clipboard!");
+        } catch (error) {
+            console.error("[HomeFeed] Failed to copy wallet address:", error);
+            Alert.alert("Copy failed", "Couldn't copy the address. Please try again.");
+        }
+    }, [primaryAddress]);
+
     const handleSelectMethod = async (method: "apple_pay" | "google_pay" | "card" | "crypto") => {
         if (!primaryAddress) {
             Alert.alert("Wallet required", "Connect your Solana wallet first to deposit.");
@@ -322,11 +354,10 @@ export default function HomeFeed() {
         if (method === "crypto") {
             Alert.alert(
                 "Crypto Deposit",
-                `Your Solana address is:\n\n${primaryAddress}\n\nSend USDC (Solana) to this address to fund your wallet.`,
+                `Your Solana address is:\n\n${primaryAddress}\n\nSend USDC on Solana to this address to fund your wallet. Sending SOL alone will not increase your trading balance.`,
                 [{
                     text: "Copy Address", onPress: () => {
-                        // In a real app, use Clipboard.setString
-                        Alert.alert("Copied", "Address copied to clipboard!");
+                        void handleCopyPrimaryAddress();
                     }
                 }, { text: "Dismiss" }]
             );
@@ -433,6 +464,7 @@ export default function HomeFeed() {
             if (seq === marketLoadSeq.current) {
                 console.log(`[HomeFeed] Setting markets state (seq=${seq})`);
                 setMarkets(list);
+                setPopularEventOrder(buildPopularEventOrder(list));
                 setCategories(orderedCategories);
             }
         } catch (e) {
@@ -440,6 +472,7 @@ export default function HomeFeed() {
             if (seq === marketLoadSeq.current) {
                 setMarketsError(e instanceof Error ? e.message : "Failed to load markets");
                 setMarkets([]);
+                setPopularEventOrder([]);
                 setCategories([]);
             }
         } finally {
@@ -459,14 +492,40 @@ export default function HomeFeed() {
                 sort: "volume",
                 cursor: nextCursor
             });
-            setMarkets(prev => [...prev, ...moreMarkets]);
+            setMarkets((prev) => {
+                const merged = new Map<string, Market>();
+                for (const market of prev) {
+                    merged.set(market.id, market);
+                }
+                for (const market of moreMarkets) {
+                    merged.set(market.id, market);
+                }
+                return Array.from(merged.values());
+            });
             setNextCursor(newCursor);
+            if (moreMarkets.length > 0) {
+                setPopularEventOrder((prev) => {
+                    const next = [...prev];
+                    const seen = new Set(prev);
+
+                    for (const eventId of buildPopularEventOrder(moreMarkets)) {
+                        if (seen.has(eventId)) continue;
+                        seen.add(eventId);
+                        next.push(eventId);
+                    }
+
+                    return next;
+                });
+                setVisibleGroupLimit((prev) => prev + (
+                    selectedCategory === "Popular" ? POPULAR_GROUP_BATCH_SIZE : CATEGORY_GROUP_BATCH_SIZE
+                ));
+            }
         } catch (e) {
             console.error("[HomeFeed] loadMoreMarkets error:", e);
         } finally {
             setIsFetchingMore(false);
         }
-    }, [isFetchingMore, nextCursor]);
+    }, [isFetchingMore, nextCursor, selectedCategory]);
 
     const loadBalances = useCallback(async () => {
         if (!primaryAddress) return;
@@ -490,9 +549,12 @@ export default function HomeFeed() {
 
     const onRefresh = useCallback(async () => {
         setRefreshing(true);
+        setVisibleGroupLimit(
+            selectedCategory === "Popular" ? POPULAR_GROUP_BATCH_SIZE : CATEGORY_GROUP_BATCH_SIZE
+        );
         await Promise.all([loadMarkets(), loadBalances()]);
         setRefreshing(false);
-    }, [loadMarkets, loadBalances]);
+    }, [loadMarkets, loadBalances, selectedCategory]);
 
     const scrollY = useSharedValue(0);
     const onScroll = useAnimatedScrollHandler({
@@ -590,6 +652,12 @@ export default function HomeFeed() {
         }
     }, [filterItems, selectedCategory]);
 
+    useEffect(() => {
+        setVisibleGroupLimit(
+            selectedCategory === "Popular" ? POPULAR_GROUP_BATCH_SIZE : CATEGORY_GROUP_BATCH_SIZE
+        );
+    }, [selectedCategory]);
+
     const filteredMarkets = useMemo(() => {
         const now = listNowMs;
         const notEndedMarkets = markets.filter((market) => !isEndedMarket(market, now));
@@ -625,27 +693,24 @@ export default function HomeFeed() {
         }
 
         if (selectedCategory === "Popular") {
-            // Sort by the intelligent popularity score
-            const sortedByScore = [...volumeMarkets]
-                .sort((a, b) => getPopularityScore(b) - getPopularityScore(a));
+            const visibleEventIds = popularEventOrder.slice(0, visibleGroupLimit);
+            const visibleEventIdSet = new Set(visibleEventIds);
+            const marketsByEventId = new Map<string, Market[]>();
 
-            // Collect markets for the top 15 distinct event groups
-            // (prevents a single highly-populated event from dominating the whole list)
-            const topPopularIds = new Set<string>();
-            const topPopularMarkets: Market[] = [];
-
-            for (const m of sortedByScore) {
-                const eid = m.eventId || m.id;
-
-                if (topPopularIds.has(eid)) {
-                    topPopularMarkets.push(m);
-                } else if (topPopularIds.size < 15) {
-                    topPopularIds.add(eid);
-                    topPopularMarkets.push(m);
+            for (const market of volumeMarkets) {
+                const eventId = market.eventId || market.id;
+                if (!visibleEventIdSet.has(eventId)) continue;
+                const bucket = marketsByEventId.get(eventId);
+                if (bucket) {
+                    bucket.push(market);
+                } else {
+                    marketsByEventId.set(eventId, [market]);
                 }
             }
 
-            return sortMarketsForOdds(topPopularMarkets, oddsSortKey, oddsSortDirection);
+            return visibleEventIds.flatMap((eventId) =>
+                sortMarketsForOdds(marketsByEventId.get(eventId) ?? [], oddsSortKey, oddsSortDirection)
+            );
         }
 
 
@@ -654,7 +719,7 @@ export default function HomeFeed() {
             (m) => getMarketCategory(m).toLowerCase() === selectedLower
         );
         return sortMarketsForOdds(categoryMarkets, oddsSortKey, oddsSortDirection);
-    }, [markets, selectedCategory, listNowMs, oddsSortKey, oddsSortDirection]);
+    }, [markets, selectedCategory, listNowMs, oddsSortKey, oddsSortDirection, popularEventOrder, visibleGroupLimit]);
 
     const handleSelectOddsSort = useCallback((key: OddsSortKey) => {
         if (key === "change" && oddsSortKey === "change") {
@@ -705,8 +770,8 @@ export default function HomeFeed() {
             }
         }
 
-        return Array.from(groupMap.values()).slice(0, 100);
-    }, [filteredMarkets]);
+        return Array.from(groupMap.values()).slice(0, visibleGroupLimit);
+    }, [filteredMarkets, visibleGroupLimit]);
 
     const renderFilterChips = (prefix: "home" | "sticky", sticky = false) => (
 

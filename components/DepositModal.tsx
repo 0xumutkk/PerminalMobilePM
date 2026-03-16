@@ -91,10 +91,10 @@ export function DepositModal({ visible, onClose, onSelectMethod }: DepositModalP
                             style={styles.methodButton}
                             onPress={() => onSelectMethod("crypto")}
                         >
-                            <View style={styles.methodInfo}>
-                                <Text style={styles.methodTitle}>Crypto</Text>
-                                <Text style={styles.methodDesc}>Receive USDC from a crypto wallet</Text>
-                            </View>
+                                <View style={styles.methodInfo}>
+                                    <Text style={styles.methodTitle}>Crypto</Text>
+                                    <Text style={styles.methodDesc}>Receive USDC on Solana (not SOL)</Text>
+                                </View>
                             <View style={[styles.iconContainer]}>
                                 <Scan color="#000" size={28} strokeWidth={2} />
                             </View>
