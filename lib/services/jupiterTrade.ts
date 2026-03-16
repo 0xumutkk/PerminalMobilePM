@@ -4,6 +4,7 @@
  */
 
 import Constants from "expo-constants";
+import { JUP_USD_MINT_ADDRESS, USDC_MINT_ADDRESS } from "../solana";
 import {
     usdToMicroUsd,
     type JupiterCreateOrderRequest,
@@ -50,6 +51,39 @@ function formatJupiterApiError(status: number, errorText: string): string {
     return `Jupiter trade failed (${status}): ${trimmed}`;
 }
 
+function formatCreateOrderError(
+    status: number,
+    errorText: string,
+    req: JupiterCreateOrderRequest
+): string {
+    const trimmed = errorText.trim();
+
+    try {
+        const parsed = JSON.parse(trimmed) as { message?: string; code?: string; type?: string };
+        const message = String(parsed.message ?? "").trim();
+        const code = String(parsed.code ?? "").trim().toUpperCase();
+
+        if (code === "INSUFFICIENT_FUNDS" && req.isBuy) {
+            const depositAmount = Number(req.depositAmount ?? "0");
+            const requiredUsdc = Number.isFinite(depositAmount) ? depositAmount / 1_000_000 : 0;
+            const fundingLabel = req.depositMint === JUP_USD_MINT_ADDRESS ? "JupUSD" : "USDC";
+            const requiredUsdcText = requiredUsdc > 0
+                ? `Need about ${requiredUsdc.toFixed(2)} ${fundingLabel}. `
+                : "";
+
+            return `${requiredUsdcText}Buying requires ${fundingLabel} on Solana. SOL only covers network/account fees.`;
+        }
+
+        if (message || code) {
+            return formatJupiterApiError(status, errorText);
+        }
+    } catch {
+        // Fall through to the generic formatter.
+    }
+
+    return formatJupiterApiError(status, errorText);
+}
+
 export interface JupiterTradeServiceProps {
     /**
      * Create an order (buy or sell)
@@ -82,6 +116,7 @@ export interface JupiterTradeServiceProps {
         side: "YES" | "NO";
         amountUsdc: number; // Spend amount in USD
         maxBuyPriceUsd?: number;
+        depositMint?: string;
         slippageBps?: number;
     }): Promise<JupiterCreateOrderResponse>;
 
@@ -113,7 +148,7 @@ export const jupiterTradeService: JupiterTradeServiceProps = {
             // Use warn instead of error to avoid triggering the global crash handler/redbox in dev
             console.warn(`[JupiterTrade] API returned ${res.status}. Body: ${errorText}`);
             console.warn(`[JupiterTrade] Failed Payload:`, JSON.stringify(req));
-            throw new Error(formatJupiterApiError(res.status, errorText));
+            throw new Error(formatCreateOrderError(res.status, errorText, req));
         }
 
         return (await res.json()) as JupiterCreateOrderResponse;
@@ -162,7 +197,7 @@ export const jupiterTradeService: JupiterTradeServiceProps = {
             isYes: params.side === "YES",
             depositAmount: String(usdToMicroUsd(params.amountUsdc)),
             maxBuyPriceUsd: params.maxBuyPriceUsd != null ? String(usdToMicroUsd(params.maxBuyPriceUsd)) : undefined,
-            depositMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // Explicitly use USDC on Solana
+            depositMint: params.depositMint ?? USDC_MINT_ADDRESS,
             slippageBps: params.slippageBps ?? 100, // Default 1%
         });
     },

@@ -1,18 +1,28 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { Connection, VersionedTransaction } from "@solana/web3.js";
+import { AppState } from "react-native";
 import { useAuth } from "./useAuth";
 import { jupiterTradeService } from "../lib/services/jupiterTrade";
+import { jupiterSwapService } from "../lib/services/jupiterSwap";
 import {
+    usdToMicroUsd,
     type JupiterCreateOrderResponse,
     type JupiterKnownOrderStatus,
     type JupiterOrder,
 } from "../lib/types/jupiter.types";
-import { SOLANA_RPC_URL, getUsdcBalance } from "../lib/solana";
+import {
+    JUP_USD_MINT_ADDRESS,
+    SOLANA_RPC_URL,
+    USDC_MINT_ADDRESS,
+    getSolBalance,
+    getStablecoinBalances,
+} from "../lib/solana";
 
 export type TradeSide = "YES" | "NO";
 export type TradeMode = "BUY" | "SELL";
 export type TradeSubmitPhase =
     | "idle"
+    | "preparing_funds"
     | "signing"
     | "confirming_transaction"
     | "transaction_submitted"
@@ -23,6 +33,7 @@ export interface QuoteContext {
     tradeMode: TradeMode;
     side: TradeSide;
     amount: number;
+    depositMint: string | null;
     positionPubkey: string | null;
     selectedPositionId: string | null;
 }
@@ -40,6 +51,7 @@ export interface TradeParams {
     side: TradeSide;
     expectedPrice?: number;
     slippageBps?: number;
+    depositMint?: string;
     selectedPositionId?: string | null;
 }
 
@@ -71,6 +83,9 @@ export interface TradeState {
     orderStatus: JupiterKnownOrderStatus | null;
     orderPubkey: string | null;
     usdcBalance: number | null;
+    usdcTokenBalance: number | null;
+    jupUsdBalance: number | null;
+    solBalance: number | null;
 }
 
 const initialState: TradeState = {
@@ -87,6 +102,9 @@ const initialState: TradeState = {
     orderStatus: null,
     orderPubkey: null,
     usdcBalance: null,
+    usdcTokenBalance: null,
+    jupUsdBalance: null,
+    solBalance: null,
 };
 
 const STRICT_PRICE_GUARD = process.env.EXPO_PUBLIC_STRICT_PRICE_GUARD === "true";
@@ -100,7 +118,11 @@ function sleep(ms: number) {
 
 function normalizeOrderStatus(status?: string | null): JupiterKnownOrderStatus | null {
     switch (status) {
+        case "created":
+        case "pending":
+        case "processing":
         case "open":
+            return "open";
         case "filled":
         case "partially_filled":
         case "cancelled":
@@ -117,6 +139,7 @@ function getQuoteContextForBuy(params: TradeParams): QuoteContext {
         tradeMode: "BUY",
         side: params.side,
         amount: params.amountUsdc,
+        depositMint: params.depositMint ?? null,
         positionPubkey: null,
         selectedPositionId: params.selectedPositionId ?? null,
     };
@@ -128,6 +151,7 @@ function getQuoteContextForSell(params: SellTradeParams): QuoteContext {
         tradeMode: "SELL",
         side: params.side,
         amount: params.amountTokens,
+        depositMint: null,
         positionPubkey: params.positionPubkey ?? null,
         selectedPositionId: params.selectedPositionId ?? params.positionPubkey ?? null,
     };
@@ -140,6 +164,7 @@ function doesQuoteContextMatch(current: QuoteContext | null, next: QuoteContext)
         current.tradeMode === next.tradeMode &&
         current.side === next.side &&
         current.amount === next.amount &&
+        current.depositMint === next.depositMint &&
         current.positionPubkey === next.positionPubkey &&
         current.selectedPositionId === next.selectedPositionId
     );
@@ -159,23 +184,48 @@ export function useTrade() {
     const { isReady, authenticated, activeWallet, signAndSendTransaction } = useAuth();
     const [state, setState] = useState<TradeState>(initialState);
     const latestQuoteRequestRef = useRef(0);
+    const walletAddress = activeWallet?.address ?? null;
 
     const fetchBalance = useCallback(async () => {
-        if (!activeWallet?.address) return;
+        if (!walletAddress) return;
         try {
-            const usdcBalance = await getUsdcBalance(activeWallet.address);
-            setState((s) => ({ ...s, usdcBalance }));
+            const [stablecoinResult, solResult] = await Promise.allSettled([
+                getStablecoinBalances(walletAddress),
+                getSolBalance(walletAddress),
+            ]);
+
+            setState((s) => ({
+                ...s,
+                usdcBalance: stablecoinResult.status === "fulfilled" ? stablecoinResult.value.total : s.usdcBalance,
+                usdcTokenBalance: stablecoinResult.status === "fulfilled" ? stablecoinResult.value.usdc : s.usdcTokenBalance,
+                jupUsdBalance: stablecoinResult.status === "fulfilled" ? stablecoinResult.value.jupUsd : s.jupUsdBalance,
+                solBalance: solResult.status === "fulfilled" ? solResult.value : s.solBalance,
+            }));
         } catch (error) {
             console.error("[Trade] Failed to fetch balance:", error);
         }
-    }, [activeWallet]);
+    }, [walletAddress]);
 
     useEffect(() => {
-        if (authenticated && activeWallet?.address) {
+        if (authenticated && walletAddress) {
             setState((s) => ({ ...s, error: null }));
-            fetchBalance();
+            void fetchBalance();
         }
-    }, [authenticated, activeWallet, fetchBalance]);
+    }, [authenticated, fetchBalance, walletAddress]);
+
+    useEffect(() => {
+        if (!authenticated || !walletAddress) return;
+
+        const subscription = AppState.addEventListener("change", (nextState) => {
+            if (nextState === "active") {
+                void fetchBalance();
+            }
+        });
+
+        return () => {
+            subscription.remove();
+        };
+    }, [authenticated, fetchBalance, walletAddress]);
 
     const clearQuote = useCallback(() => {
         latestQuoteRequestRef.current += 1;
@@ -194,7 +244,13 @@ export function useTrade() {
 
     const reset = useCallback(() => {
         latestQuoteRequestRef.current += 1;
-        setState((s) => ({ ...initialState, usdcBalance: s.usdcBalance }));
+        setState((s) => ({
+            ...initialState,
+            usdcBalance: s.usdcBalance,
+            usdcTokenBalance: s.usdcTokenBalance,
+            jupUsdBalance: s.jupUsdBalance,
+            solBalance: s.solBalance,
+        }));
     }, []);
 
     const confirmTransaction = useCallback(async (signature: string) => {
@@ -218,6 +274,38 @@ export function useTrade() {
         throw new Error("Transaction confirmation timed out.");
     }, []);
 
+    const swapUsdcToJupUsd = useCallback(async (missingAmountUsd: number, slippageBps?: number) => {
+        if (!isReady || !authenticated || !walletAddress) {
+            throw new Error("Please connect your wallet first");
+        }
+
+        const outputAmount = usdToMicroUsd(missingAmountUsd);
+        if (outputAmount <= 0) return null;
+
+        const quote = await jupiterSwapService.getExactOutQuote({
+            inputMint: USDC_MINT_ADDRESS,
+            outputMint: JUP_USD_MINT_ADDRESS,
+            outputAmount: String(outputAmount),
+            slippageBps,
+        });
+
+        const swapTx = await jupiterSwapService.buildSwapTransaction({
+            userPublicKey: walletAddress,
+            quoteResponse: quote,
+        });
+
+        if (!swapTx.swapTransaction) {
+            throw new Error("No swap transaction returned from Jupiter.");
+        }
+
+        const transactionBytes = Buffer.from(swapTx.swapTransaction, "base64");
+        const transaction = VersionedTransaction.deserialize(transactionBytes);
+        const result = await signAndSendTransaction(transaction);
+        const signature = result.signature;
+        await confirmTransaction(signature);
+        return signature;
+    }, [authenticated, confirmTransaction, isReady, signAndSendTransaction, walletAddress]);
+
     const pollOrderResolution = useCallback(async (orderPubkey: string) => {
         let latestOrder: JupiterOrder | null = null;
         const startedAt = Date.now();
@@ -226,7 +314,9 @@ export function useTrade() {
             latestOrder = await jupiterTradeService.getOrderStatus(orderPubkey);
             const normalized = normalizeOrderStatus(latestOrder.status);
             if (!normalized) {
-                throw new Error(`Unknown order status received: ${latestOrder.status}`);
+                console.warn(`[Trade] Unknown order status while polling: ${latestOrder.status}`);
+                await sleep(ORDER_STATUS_POLL_INTERVAL_MS);
+                continue;
             }
             if (normalized !== "open") {
                 return { order: latestOrder, status: normalized };
@@ -272,14 +362,40 @@ export function useTrade() {
 
         try {
             const maxPrice = params.expectedPrice ? Math.min(0.999999, params.expectedPrice * 1.05) : undefined;
-            const quote = await jupiterTradeService.buy({
-                ownerPubkey: activeWallet.address,
-                marketId: params.marketId,
-                side: params.side,
-                amountUsdc: params.amountUsdc,
-                maxBuyPriceUsd: maxPrice,
-                slippageBps: params.slippageBps,
-            });
+            const shouldRetryForFundingSync = params.depositMint === JUP_USD_MINT_ADDRESS;
+            const maxAttempts = shouldRetryForFundingSync ? 3 : 1;
+            let quote: JupiterCreateOrderResponse | null = null;
+            let lastMessage = "Quote failed";
+
+            for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+                try {
+                    quote = await jupiterTradeService.buy({
+                        ownerPubkey: activeWallet.address,
+                        marketId: params.marketId,
+                        side: params.side,
+                        amountUsdc: params.amountUsdc,
+                        maxBuyPriceUsd: maxPrice,
+                        depositMint: params.depositMint,
+                        slippageBps: params.slippageBps,
+                    });
+                    break;
+                } catch (error) {
+                    lastMessage = error instanceof Error ? error.message : "Quote failed";
+                    const isFundingLag = shouldRetryForFundingSync
+                        && /insufficient funds/i.test(lastMessage)
+                        && attempt < maxAttempts - 1;
+                    if (!isFundingLag) {
+                        throw error;
+                    }
+
+                    await sleep(1_500 * (attempt + 1));
+                    await fetchBalance();
+                }
+            }
+
+            if (!quote) {
+                throw new Error(lastMessage);
+            }
 
             if (requestId !== latestQuoteRequestRef.current) return null;
 
@@ -304,7 +420,7 @@ export function useTrade() {
             }));
             return null;
         }
-    }, [activeWallet]);
+    }, [activeWallet, fetchBalance]);
 
     const getSwapQuote = useCallback(async (params: SellTradeParams) => {
         if (!activeWallet?.address) {
@@ -519,13 +635,72 @@ export function useTrade() {
             return null;
         }
 
+        const requestedMint = params.depositMint ?? USDC_MINT_ADDRESS;
+        const currentJupUsd = state.jupUsdBalance ?? 0;
+        const currentUsdc = state.usdcTokenBalance ?? 0;
+        const needsJupUsdTopUp = requestedMint === JUP_USD_MINT_ADDRESS
+            && currentJupUsd + 0.000001 < params.amountUsdc
+            && currentJupUsd + currentUsdc + 0.000001 >= params.amountUsdc;
+
+        if (needsJupUsdTopUp) {
+            const missingAmount = Math.max(0, params.amountUsdc - currentJupUsd);
+            setState((s) => ({
+                ...s,
+                isLoading: true,
+                error: null,
+                quote: null,
+                quoteContext: null,
+                selectedPositionId: params.selectedPositionId ?? null,
+                submitPhase: "preparing_funds",
+                orderStatus: null,
+                orderPubkey: null,
+            }));
+
+            try {
+                await swapUsdcToJupUsd(missingAmount, params.slippageBps);
+                await fetchBalance();
+                setState((s) => ({
+                    ...s,
+                    isLoading: false,
+                    submitPhase: "idle",
+                    signature: null,
+                }));
+            } catch (error) {
+                console.error("[Trade] JupUSD top-up swap error:", error);
+                const message = error instanceof Error ? error.message : "Failed to prepare JupUSD for trade.";
+                setState((s) => ({
+                    ...s,
+                    isLoading: false,
+                    isSigning: false,
+                    isConfirming: false,
+                    error: message,
+                    quote: null,
+                    quoteContext: null,
+                    selectedPositionId: null,
+                    submitPhase: "idle",
+                    orderStatus: null,
+                    orderPubkey: null,
+                }));
+                return null;
+            }
+        }
+
         const context = getQuoteContextForBuy(params);
-        const quote = doesQuoteContextMatch(state.quoteContext, context)
+        const quote = !needsJupUsdTopUp && doesQuoteContextMatch(state.quoteContext, context)
             ? state.quote
             : await getQuote(params);
 
         return executeSwap("buy", quote, params.expectedPrice);
-    }, [executeSwap, getQuote, state.quote, state.quoteContext]);
+    }, [
+        executeSwap,
+        fetchBalance,
+        getQuote,
+        state.jupUsdBalance,
+        state.quote,
+        state.quoteContext,
+        state.usdcTokenBalance,
+        swapUsdcToJupUsd,
+    ]);
 
     const sell = useCallback(async (params: SellTradeParams) => {
         if (!params.positionPubkey) {

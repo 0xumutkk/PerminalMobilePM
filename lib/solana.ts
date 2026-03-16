@@ -3,9 +3,11 @@ import { Connection, PublicKey } from "@solana/web3.js";
 const LAMPORTS_PER_SOL = 1e9;
 
 /** USDC mint on Solana mainnet */
-const USDC_MINT = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
+export const USDC_MINT_ADDRESS = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const USDC_MINT = new PublicKey(USDC_MINT_ADDRESS);
 /** JupUSD mint on Solana (often used as collateral/quote in Jupiter Prediction) */
-const JUP_USD_MINT = new PublicKey("JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD");
+export const JUP_USD_MINT_ADDRESS = "JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD";
+const JUP_USD_MINT = new PublicKey(JUP_USD_MINT_ADDRESS);
 
 const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 const TOKEN_2022_PROGRAM_ID = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
@@ -33,6 +35,12 @@ export function getConnection(): Connection {
         connection = new Connection(SOLANA_RPC_URL);
     }
     return connection;
+}
+
+export interface StablecoinBalances {
+    usdc: number;
+    jupUsd: number;
+    total: number;
 }
 
 /**
@@ -85,9 +93,21 @@ export async function getTokenBalance(address: string, mintAddress: string): Pro
  * Fetch USDC (SPL token) balance for an address.
  */
 export async function getUsdcBalance(address: string): Promise<number> {
-    const usdc = await getTokenBalance(address, USDC_MINT.toBase58());
-    const jupUsd = await getTokenBalance(address, JUP_USD_MINT.toBase58());
-    return usdc + jupUsd;
+    const balances = await getStablecoinBalances(address);
+    return balances.total;
+}
+
+export async function getStablecoinBalances(address: string): Promise<StablecoinBalances> {
+    const [usdc, jupUsd] = await Promise.all([
+        getTokenBalance(address, USDC_MINT.toBase58()),
+        getTokenBalance(address, JUP_USD_MINT.toBase58()),
+    ]);
+
+    return {
+        usdc,
+        jupUsd,
+        total: usdc + jupUsd,
+    };
 }
 
 /**

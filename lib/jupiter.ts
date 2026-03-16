@@ -11,9 +11,14 @@ import type { Market, ChartPoint } from "./mock-data";
 import { applyHomeMarketFilter, type HomeMarketFilter } from "./homeMarketFilters";
 import {
     microUsdToProbability,
+    type JupiterAccountHistoryEvent,
+    type JupiterAccountHistoryResponse,
     type JupiterEvent,
     type JupiterMarket,
     type JupiterEventsResponse,
+    type JupiterProfile,
+    type JupiterProfilePnlHistoryResponse,
+    type JupiterProfilePnlPoint,
     type JupiterSearchResponse,
     type JupiterPosition,
     type JupiterPositionsResponse,
@@ -605,6 +610,101 @@ export async function fetchJupiterPositions(ownerPubkey: string): Promise<Jupite
     } catch (error) {
         console.error("[Jupiter] fetchJupiterPositions error:", error);
         return [];
+    }
+}
+
+/**
+ * Fetch aggregated profile statistics for a wallet.
+ */
+export async function fetchJupiterProfile(ownerPubkey: string): Promise<JupiterProfile | null> {
+    const normalizedOwner = ownerPubkey.trim();
+    if (!normalizedOwner) return null;
+
+    const url = `${JUPITER_BASE_URL}/profiles/${encodeURIComponent(normalizedOwner)}`;
+    try {
+        const res = await fetch(url, { headers: getHeaders() });
+        if (!res.ok) {
+            console.warn(`[Jupiter] Profile API returned ${res.status}`);
+            return null;
+        }
+        return (await res.json()) as JupiterProfile;
+    } catch (error) {
+        console.error("[Jupiter] fetchJupiterProfile error:", error);
+        return null;
+    }
+}
+
+/**
+ * Fetch historical profile balance / realized PnL points for charting.
+ */
+export async function fetchJupiterProfilePnlHistory(
+    ownerPubkey: string,
+    params?: { interval?: "24h" | "1w" | "1m"; count?: number }
+): Promise<JupiterProfilePnlPoint[]> {
+    const normalizedOwner = ownerPubkey.trim();
+    if (!normalizedOwner) return [];
+
+    const url = new URL(`${JUPITER_BASE_URL}/profiles/${encodeURIComponent(normalizedOwner)}/pnl-history`);
+    if (params?.interval) {
+        url.searchParams.set("interval", params.interval);
+    }
+    if (params?.count != null && Number.isFinite(params.count)) {
+        url.searchParams.set("count", String(Math.max(1, Math.min(1000, Math.floor(params.count)))));
+    }
+
+    try {
+        const res = await fetch(url.toString(), { headers: getHeaders() });
+        if (!res.ok) {
+            console.warn(`[Jupiter] Profile PnL history API returned ${res.status}`);
+            return [];
+        }
+        const data = (await res.json()) as JupiterProfilePnlHistoryResponse;
+        return data.history ?? data.data ?? [];
+    } catch (error) {
+        console.error("[Jupiter] fetchJupiterProfilePnlHistory error:", error);
+        return [];
+    }
+}
+
+/**
+ * Fetch wallet-level trade / settlement / claim history.
+ */
+export async function fetchJupiterAccountHistory(
+    ownerPubkey: string,
+    params?: { start?: number; end?: number; positionPubkey?: string; id?: number }
+): Promise<JupiterAccountHistoryResponse> {
+    const normalizedOwner = ownerPubkey.trim();
+    if (!normalizedOwner) return { data: [] };
+
+    const url = new URL(`${JUPITER_BASE_URL}/history`);
+    url.searchParams.set("ownerPubkey", normalizedOwner);
+    if (params?.start != null && Number.isFinite(params.start)) {
+        url.searchParams.set("start", String(Math.max(0, Math.floor(params.start))));
+    }
+    if (params?.end != null && Number.isFinite(params.end)) {
+        url.searchParams.set("end", String(Math.max(0, Math.floor(params.end))));
+    }
+    if (params?.positionPubkey?.trim()) {
+        url.searchParams.set("positionPubkey", params.positionPubkey.trim());
+    }
+    if (params?.id != null && Number.isFinite(params.id)) {
+        url.searchParams.set("id", String(Math.max(1, Math.floor(params.id))));
+    }
+
+    try {
+        const res = await fetch(url.toString(), { headers: getHeaders() });
+        if (!res.ok) {
+            console.warn(`[Jupiter] Account history API returned ${res.status}`);
+            return { data: [] };
+        }
+        const data = (await res.json()) as JupiterAccountHistoryResponse;
+        return {
+            data: data.data ?? [],
+            pagination: data.pagination,
+        };
+    } catch (error) {
+        console.error("[Jupiter] fetchJupiterAccountHistory error:", error);
+        return { data: [] };
     }
 }
 
