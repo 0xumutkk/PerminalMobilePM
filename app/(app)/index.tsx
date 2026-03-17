@@ -35,10 +35,8 @@ import {
     Circle,
     ArrowUpCircle,
     ArrowDownCircle,
-    Star,
 } from "lucide-react-native";
 import Svg, { Path } from "react-native-svg";
-import { Image } from "expo-image";
 
 import Animated, {
     useSharedValue,
@@ -52,7 +50,6 @@ import { FlashList } from "@shopify/flash-list";
 import { BottomProgressiveBlur } from "../../components/ui/BottomProgressiveBlur";
 import {
     listFavoriteMarkets,
-    removeFavoriteMarket,
     type FavoriteMarketRecord,
 } from "../../lib/favoriteMarkets";
 
@@ -281,6 +278,29 @@ function formatResolveLabel(resolveDate?: string): string | null {
     })}`;
 }
 
+function buildFavoriteFallbackMarket(item: FavoriteMarketRecord): Market {
+    const probability = Number.isFinite(item.yesPrice) ? Math.max(0, Math.min(1, item.yesPrice)) : 0;
+
+    return {
+        id: item.marketId || item.routeId,
+        marketId: item.marketId,
+        eventId: item.eventId,
+        title: item.title,
+        eventTitle: item.subtitle,
+        description: item.subtitle,
+        category: item.category || "Favorites",
+        imageUrl: item.imageUrl,
+        yesPrice: probability,
+        volume: Number.isFinite(item.volume) ? item.volume : 0,
+        volume24h: Number.isFinite(item.volume) ? item.volume : 0,
+        liquidityScore: 0,
+        resolveDate: item.resolveDate,
+        provider: item.provider,
+        isTradeable: true,
+        priceHistory: [],
+    };
+}
+
 function getGroupHighestYesPrice(group: MarketGroup): number {
     return group.markets.reduce((highest, market) => {
         return Math.max(highest, Number.isFinite(market.yesPrice) ? market.yesPrice : 0);
@@ -361,12 +381,27 @@ export default function HomeFeed() {
     const [isDepositModalVisible, setIsDepositModalVisible] = useState(false);
     const [favoriteMarkets, setFavoriteMarkets] = useState<FavoriteMarketRecord[]>([]);
     const [favoritesLoading, setFavoritesLoading] = useState(false);
-    const [showFavoritesSheet, setShowFavoritesSheet] = useState(false);
 
     const [nextCursor, setNextCursor] = useState<string | null>(null);
     const [isFetchingMore, setIsFetchingMore] = useState(false);
     const [visibleGroupLimit, setVisibleGroupLimit] = useState(POPULAR_GROUP_BATCH_SIZE);
     const [popularEventOrder, setPopularEventOrder] = useState<string[]>([]);
+
+    const homeCatScrollRef = useRef<ScrollView>(null);
+    const stickyCatScrollRef = useRef<ScrollView>(null);
+    const catLayouts = useRef(new Map<string, number>());
+    const isScrollingHome = useRef(false);
+    const isScrollingSticky = useRef(false);
+
+    const scrollToActiveCategory = useCallback((category: string, animated = true) => {
+        if (isScrollingHome.current || isScrollingSticky.current) return;
+        const x = catLayouts.current.get(category);
+        if (x !== undefined) {
+            const scrollX = Math.max(0, x - 12);
+            homeCatScrollRef.current?.scrollTo({ x: scrollX, animated });
+            stickyCatScrollRef.current?.scrollTo({ x: scrollX, animated });
+        }
+    }, []);
 
     const handleOpenTrade = (market: Market, side: TradeSide) => {
         setTradingMarket(market);
@@ -551,7 +586,7 @@ export default function HomeFeed() {
     }, []);
 
     const loadMoreMarkets = useCallback(async () => {
-        if (isFetchingMore || !nextCursor) return;
+        if (isFetchingMore || !nextCursor || selectedCategory === "Favorites") return;
         setIsFetchingMore(true);
         try {
             const { markets: moreMarkets, nextCursor: newCursor } = await fetchMarketsForApp({
@@ -718,6 +753,7 @@ export default function HomeFeed() {
     }, [categories, markets, listNowMs]);
 
     useEffect(() => {
+        if (selectedCategory === "Favorites") return;
         if (filterItems.length === 0) return;
         if (!filterItems.includes(selectedCategory)) {
             setSelectedCategory(filterItems[0]);
@@ -728,7 +764,10 @@ export default function HomeFeed() {
         setVisibleGroupLimit(
             selectedCategory === "Popular" ? POPULAR_GROUP_BATCH_SIZE : CATEGORY_GROUP_BATCH_SIZE
         );
-    }, [selectedCategory]);
+        // Delay slightly to ensure layouts are captured
+        const timer = setTimeout(() => scrollToActiveCategory(selectedCategory), 100);
+        return () => clearTimeout(timer);
+    }, [selectedCategory, scrollToActiveCategory]);
 
     useEffect(() => {
         if (previousCategoryRef.current === selectedCategory) return;
@@ -861,6 +900,22 @@ export default function HomeFeed() {
         return next;
     }, [markets]);
 
+    const liveMarketsByEventId = useMemo(() => {
+        const next = new Map<string, Market[]>();
+
+        for (const item of markets) {
+            const eventId = String(item.eventId || item.id);
+            const existing = next.get(eventId);
+            if (existing) {
+                existing.push(item);
+            } else {
+                next.set(eventId, [item]);
+            }
+        }
+
+        return next;
+    }, [markets]);
+
     const favoriteMarketItems = useMemo(() => {
         return favoriteMarkets.map((item) => {
             const liveMarket = liveMarketsById.get(item.marketId);
@@ -880,88 +935,161 @@ export default function HomeFeed() {
         });
     }, [favoriteMarkets, liveMarketsById]);
 
-    const handleOpenFavorites = useCallback(() => {
-        setShowFavoritesSheet(true);
-    }, []);
+    const favoriteMarketGroups = useMemo(() => {
+        return favoriteMarketItems.map((item) => {
+            const isEventFavorite = !!item.eventId && item.routeId === item.eventId;
 
-    const handleFavoritePress = useCallback((item: FavoriteMarketRecord) => {
-        setShowFavoritesSheet(false);
-        router.push({
-            pathname: "/market/[id]",
-            params: { id: item.routeId },
+            if (isEventFavorite) {
+                const liveEventMarkets = liveMarketsByEventId.get(item.eventId!);
+
+                if (liveEventMarkets && liveEventMarkets.length > 0) {
+                    const sortedMarkets = sortMarketsWithinGroup(liveEventMarkets);
+                    const primaryMarket = sortedMarkets[0];
+                    const totalVolume = primaryMarket.eventVolume && primaryMarket.eventVolume > 0
+                        ? primaryMarket.eventVolume
+                        : sortedMarkets.reduce((sum, market) => sum + (Number.isFinite(market.volume) ? market.volume : 0), 0);
+                    const earliestResolveDate = sortedMarkets.reduce((earliest, market) => {
+                        if (!earliest) return market.resolveDate;
+                        return market.resolveDate < earliest ? market.resolveDate : earliest;
+                    }, primaryMarket.resolveDate);
+
+                    return {
+                        eventId: item.routeId,
+                        title: item.title,
+                        description: primaryMarket.description,
+                        category: primaryMarket.category,
+                        imageUrl: primaryMarket.imageUrl ?? item.imageUrl,
+                        markets: sortedMarkets,
+                        volume: totalVolume,
+                        resolveDate: earliestResolveDate,
+                        status: primaryMarket.status,
+                        provider: primaryMarket.provider,
+                    } satisfies MarketGroup;
+                }
+            }
+
+            const liveMarket = liveMarketsById.get(item.marketId);
+            const favoriteMarket = liveMarket ?? buildFavoriteFallbackMarket(item);
+
+            return {
+                eventId: item.routeId,
+                title: item.title,
+                description: liveMarket?.description ?? item.subtitle,
+                category: liveMarket?.category ?? item.category,
+                imageUrl: liveMarket?.imageUrl ?? item.imageUrl,
+                markets: [favoriteMarket],
+                volume: Number.isFinite(liveMarket?.volume) ? liveMarket!.volume : item.volume,
+                resolveDate: liveMarket?.resolveDate ?? item.resolveDate,
+                status: liveMarket?.status,
+                provider: liveMarket?.provider ?? item.provider,
+            } satisfies MarketGroup;
         });
-    }, [router]);
-
-    const handleRemoveFavorite = useCallback(async (routeId: string) => {
-        const next = await removeFavoriteMarket(routeId);
-        setFavoriteMarkets(next);
-    }, []);
-
+    }, [favoriteMarketItems, liveMarketsByEventId, liveMarketsById]);
     const renderFilterChips = (prefix: "home" | "sticky", sticky = false) => (
-
-        <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            style={sticky ? styles.stickyCategoryScroll : styles.categoryScrollView}
-            contentContainerStyle={styles.categoryScrollContent}
-        >
-            <Pressable style={styles.oddsPill} onPress={() => setShowOddsSortSheet(true)}>
-                <Svg
-                    width={8}
-                    height={6}
-                    viewBox="0 0 8 6"
-                    fill="none"
-                    style={[
-                        styles.oddsPillIcon,
-                        oddsSortDirection === "down" ? styles.oddsPillIconDown : undefined,
-                    ]}
-                >
-                    <Path
-                        d="M1.51016 6C0.255811 6 -0.449787 4.60746 0.320316 3.65172L2.8102 0.561716C3.41365 -0.187234 4.58638 -0.187243 5.18983 0.561716L7.6797 3.65172C8.44976 4.60746 7.74421 6 6.48988 6H1.51016Z"
-                        fill="#3B82F7"
-                    />
-                </Svg>
-                <Text style={styles.oddsPillText}>Odds</Text>
-            </Pressable>
-
-            <View style={styles.filtersDivider} />
-
-            <Pressable style={styles.oddsPill} onPress={handleOpenFavorites}>
-                <Text style={styles.oddsPillText}>Favorites</Text>
-                {favoriteMarketItems.length > 0 ? (
-                    <View style={styles.favoritesPillCount}>
-                        <Text style={styles.favoritesPillCountText}>
-                            {favoriteMarketItems.length > 9 ? "9+" : favoriteMarketItems.length}
-                        </Text>
-                    </View>
-                ) : null}
-            </Pressable>
-
-            {filterItems.map((category) => {
-                const isSelected = selectedCategory === category;
-                const Icon = categoryToIcon(category);
-
-                return (
-                    <Pressable
-                        key={`${prefix}-${category}`}
-                        style={[styles.categoryPill, isSelected && styles.categoryPillActive]}
-                        onPress={() => setSelectedCategory(category)}
+        <View style={[styles.filterChipsContainer, sticky && styles.stickyCategoryScroll]}>
+            <View style={styles.fixedFilters}>
+                <Pressable style={styles.oddsPill} onPress={() => setShowOddsSortSheet(true)}>
+                    <Svg
+                        width={8}
+                        height={6}
+                        viewBox="0 0 8 6"
+                        fill="none"
+                        style={[
+                            styles.oddsPillIcon,
+                            oddsSortDirection === "down" ? styles.oddsPillIconDown : undefined,
+                        ]}
                     >
-                        {Icon ? (
-                            <Icon
-                                size={16}
-                                strokeWidth={2}
-                                color={isSelected ? "#3b82f7" : "rgba(0,0,0,0.4)"}
-                            />
-                        ) : null}
-                        <Text style={[styles.categoryPillText, isSelected && styles.categoryPillTextActive]}>
-                            {categoryPillLabel(category)}
-                        </Text>
-                    </Pressable>
-                );
-            })}
-        </ScrollView>
+                        <Path
+                            d="M1.51016 6C0.255811 6 -0.449787 4.60746 0.320316 3.65172L2.8102 0.561716C3.41365 -0.187234 4.58638 -0.187243 5.18983 0.561716L7.6797 3.65172C8.44976 4.60746 7.74421 6 6.48988 6H1.51016Z"
+                            fill="#3B82F7"
+                        />
+                    </Svg>
+                    <Text style={styles.oddsPillText}>Odds</Text>
+                </Pressable>
+
+                <View style={styles.filtersDivider} />
+            </View>
+
+            <ScrollView
+                ref={sticky ? stickyCatScrollRef : homeCatScrollRef}
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={styles.categoryScrollView}
+                contentContainerStyle={styles.categoryScrollContent}
+                scrollEventThrottle={16}
+                onScrollBeginDrag={() => {
+                    if (sticky) isScrollingSticky.current = true;
+                    else isScrollingHome.current = true;
+                }}
+                onScrollEndDrag={() => {
+                    if (sticky) isScrollingSticky.current = false;
+                    else isScrollingHome.current = false;
+                }}
+                onMomentumScrollBegin={() => {
+                    if (sticky) isScrollingSticky.current = true;
+                    else isScrollingHome.current = true;
+                }}
+                onMomentumScrollEnd={() => {
+                    if (sticky) isScrollingSticky.current = false;
+                    else isScrollingHome.current = false;
+                }}
+                onScroll={(e) => {
+                    const x = e.nativeEvent.contentOffset.x;
+                    if (sticky && isScrollingSticky.current) {
+                        homeCatScrollRef.current?.scrollTo({ x, animated: false });
+                    } else if (!sticky && isScrollingHome.current) {
+                        stickyCatScrollRef.current?.scrollTo({ x, animated: false });
+                    }
+                }}
+            >
+                <Pressable
+                    style={[styles.oddsPill, selectedCategory === "Favorites" && styles.fixedCategoryPillActive]}
+                    onPress={() => setSelectedCategory("Favorites")}
+                    onLayout={(e) => {
+                        catLayouts.current.set("Favorites", e.nativeEvent.layout.x);
+                    }}
+                >
+                    <Text style={[styles.oddsPillText, selectedCategory === "Favorites" && styles.fixedCategoryPillTextActive]}>
+                        Favorites
+                    </Text>
+                    {favoriteMarketItems.length > 0 ? (
+                        <View style={styles.favoritesPillCount}>
+                            <Text style={styles.favoritesPillCountText}>
+                                {favoriteMarketItems.length > 9 ? "9+" : favoriteMarketItems.length}
+                            </Text>
+                        </View>
+                    ) : null}
+                </Pressable>
+                {filterItems.map((category) => {
+                    const isSelected = selectedCategory === category;
+                    const Icon = categoryToIcon(category);
+
+                    return (
+                        <Pressable
+                            key={`${prefix}-${category}`}
+                            style={[styles.categoryPill, isSelected && styles.categoryPillActive]}
+                            onPress={() => setSelectedCategory(category)}
+                            onLayout={(e) => {
+                                catLayouts.current.set(category, e.nativeEvent.layout.x);
+                            }}
+                        >
+                            {Icon ? (
+                                <Icon
+                                    size={16}
+                                    strokeWidth={2}
+                                    color={isSelected ? "#3b82f7" : "rgba(0,0,0,0.4)"}
+                                />
+                            ) : null}
+                            <Text style={[styles.categoryPillText, isSelected && styles.categoryPillTextActive]}>
+                                {categoryPillLabel(category)}
+                            </Text>
+                        </Pressable>
+                    );
+                })}
+            </ScrollView>
+        </View>
     );
+
 
     const renderHeader = () => (
         <View style={styles.headerSection}>
@@ -1073,6 +1201,15 @@ export default function HomeFeed() {
         );
     };
 
+    const visibleMarketGroups = selectedCategory === "Favorites"
+        ? sortMarketGroupsForOdds(
+            favoriteMarketGroups,
+            oddsSortKey,
+            oddsSortDirection,
+            new Map(favoriteMarketItems.map((item, index) => [item.routeId, index] as const))
+        ).slice(0, visibleGroupLimit)
+        : groupedFilteredMarkets;
+
     return (
         <View style={styles.container}>
             <StatusBar style="dark" />
@@ -1081,12 +1218,12 @@ export default function HomeFeed() {
                 ref={listRef as any}
                 onScroll={onScroll}
                 scrollEventThrottle={16}
-                data={groupedFilteredMarkets}
+                data={visibleMarketGroups}
                 renderItem={({ item, index }: any) => (
                     <MarketCardNative
                         group={item}
                         isFirst={index === 0}
-                        isLast={index === groupedFilteredMarkets.length - 1}
+                        isLast={index === visibleMarketGroups.length - 1}
                         nowMs={listNowMs}
                         onBuyYes={(m) => handleOpenTrade(m, "YES")}
                         onBuyNo={(m) => handleOpenTrade(m, "NO")}
@@ -1106,142 +1243,35 @@ export default function HomeFeed() {
                         progressBackgroundColor="#f0f0f0"
                     />
                 }
-                onEndReached={loadMoreMarkets}
+                onEndReached={selectedCategory === "Favorites" ? null : loadMoreMarkets}
                 onEndReachedThreshold={0.5}
                 ListFooterComponent={() => (
-                    isFetchingMore ? (
+                    isFetchingMore && selectedCategory !== "Favorites" ? (
                         <View style={styles.listFooter}>
                             <ActivityIndicator size="small" color="#8d8d8d" />
                         </View>
                     ) : <View style={{ height: 40 }} />
                 )}
                 ListEmptyComponent={
-                    marketsLoading ? (
+                    (selectedCategory === "Favorites" ? favoritesLoading : marketsLoading) ? (
                         <View style={styles.loadingContainer}>
                             <ActivityIndicator size="large" color="#3b82f7" />
-                            <Text style={styles.loadingText}>Loading markets...</Text>
+                            <Text style={styles.loadingText}>
+                                {selectedCategory === "Favorites" ? "Loading favorites..." : "Loading markets..."}
+                            </Text>
                         </View>
                     ) : (
                         <View style={styles.emptyMarkets}>
                             <Text style={styles.emptyMarketsText}>
-                                {marketsError ?? "No markets available."}
+                                {selectedCategory === "Favorites"
+                                    ? "No favorites yet."
+                                    : (marketsError ?? "No markets available.")}
                             </Text>
                         </View>
                     )
                 }
             />
             <BottomProgressiveBlur style={styles.feedBottomBlur} />
-
-            <Modal
-                visible={showFavoritesSheet}
-                animationType="slide"
-                transparent
-                onRequestClose={() => setShowFavoritesSheet(false)}
-            >
-                <Pressable style={styles.sortSheetOverlay} onPress={() => setShowFavoritesSheet(false)}>
-                    <Pressable style={styles.favoritesSheetContainer} onPress={(e) => e.stopPropagation()}>
-                        <View style={styles.sortSheetHandle} />
-                        <View style={styles.favoritesSheetHeader}>
-                            <Text style={styles.sortSheetTitle}>Favorites</Text>
-                            <Text style={styles.favoritesSheetCount}>
-                                {favoriteMarketItems.length}
-                            </Text>
-                        </View>
-
-                        {favoritesLoading ? (
-                            <View style={styles.favoriteEmptyState}>
-                                <ActivityIndicator size="small" color="#8d8d8d" />
-                            </View>
-                        ) : favoriteMarketItems.length === 0 ? (
-                            <View style={styles.favoriteEmptyState}>
-                                <Text style={styles.favoriteEmptyTitle}>No favorites yet</Text>
-                                <Text style={styles.favoriteEmptyText}>
-                                    Mark a market with the Favorites button and it will appear here.
-                                </Text>
-                            </View>
-                        ) : (
-                            <ScrollView
-                                style={styles.favoritesList}
-                                contentContainerStyle={styles.favoritesListContent}
-                                showsVerticalScrollIndicator={false}
-                            >
-                                {favoriteMarketItems.map((item) => {
-                                    const resolveLabel = formatResolveLabel(item.resolveDate);
-                                    const initial = (item.title || item.category || "M").charAt(0).toUpperCase();
-
-                                    return (
-                                        <View key={item.routeId} style={styles.favoriteRow}>
-                                            <Pressable
-                                                style={styles.favoriteRowMain}
-                                                onPress={() => handleFavoritePress(item)}
-                                            >
-                                                <View style={styles.favoriteRowImage}>
-                                                    {item.imageUrl ? (
-                                                        <Image
-                                                            source={item.imageUrl}
-                                                            style={styles.favoriteRowImageAsset}
-                                                            contentFit="cover"
-                                                        />
-                                                    ) : (
-                                                        <Text style={styles.favoriteRowImageFallback}>{initial}</Text>
-                                                    )}
-                                                </View>
-
-                                                <View style={styles.favoriteRowContent}>
-                                                    <Text style={styles.favoriteRowTitle} numberOfLines={2}>
-                                                        {item.title}
-                                                    </Text>
-                                                    {item.subtitle ? (
-                                                        <Text style={styles.favoriteRowSubtitle} numberOfLines={1}>
-                                                            {item.subtitle}
-                                                        </Text>
-                                                    ) : null}
-
-                                                    <View style={styles.favoriteCategoryPill}>
-                                                        <Text style={styles.favoriteCategoryText}>
-                                                            {item.category || "Market"}
-                                                        </Text>
-                                                    </View>
-
-                                                    <View style={styles.favoriteMetaRow}>
-                                                        <Text style={styles.favoriteMetaText}>
-                                                            {Math.round(item.yesPrice * 100)}% Yes
-                                                        </Text>
-                                                        <View style={styles.favoriteMetaDot} />
-                                                        <Text style={styles.favoriteMetaText}>
-                                                            {formatVolumeLabel(item.volume)}
-                                                        </Text>
-                                                        {resolveLabel ? (
-                                                            <>
-                                                                <View style={styles.favoriteMetaDot} />
-                                                                <Text style={styles.favoriteMetaText}>
-                                                                    {resolveLabel}
-                                                                </Text>
-                                                            </>
-                                                        ) : null}
-                                                    </View>
-                                                </View>
-                                            </Pressable>
-
-                                            <Pressable
-                                                style={styles.favoriteRemoveButton}
-                                                onPress={() => handleRemoveFavorite(item.routeId)}
-                                            >
-                                                <Star
-                                                    size={18}
-                                                    color="#F59E0B"
-                                                    fill="#F59E0B"
-                                                    strokeWidth={1.8}
-                                                />
-                                            </Pressable>
-                                        </View>
-                                    );
-                                })}
-                            </ScrollView>
-                        )}
-                    </Pressable>
-                </Pressable>
-            </Modal>
 
             <Modal
                 visible={showOddsSortSheet}
@@ -1424,15 +1454,27 @@ const styles = StyleSheet.create({
         opacity: 0.9,
         transform: [{ scale: 0.97 }],
     },
-    categoryScrollView: {
+    filterChipsContainer: {
+        flexDirection: "row",
+        alignItems: "center",
         marginTop: 8,
+        paddingLeft: 14,
+    },
+    fixedFilters: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        marginRight: 8,
+    },
+    categoryScrollView: {
+        flex: 1,
     },
     categoryScrollContent: {
         flexDirection: "row",
         alignItems: "center",
         gap: 8,
         paddingVertical: 2,
-        paddingHorizontal: 14, // Moved from listContent to here
+        paddingRight: 14,
     },
     categoryPill: {
         height: 34,
@@ -1484,6 +1526,12 @@ const styles = StyleSheet.create({
         fontSize: 15,
         lineHeight: 18,
         fontWeight: "500",
+    },
+    fixedCategoryPillActive: {
+        backgroundColor: "rgba(59,130,247,0.15)",
+    },
+    fixedCategoryPillTextActive: {
+        color: "#3b82f7",
     },
     favoritesPillCount: {
         minWidth: 18,
