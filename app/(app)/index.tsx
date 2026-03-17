@@ -35,8 +35,10 @@ import {
     Circle,
     ArrowUpCircle,
     ArrowDownCircle,
+    Star,
 } from "lucide-react-native";
 import Svg, { Path } from "react-native-svg";
+import { Image } from "expo-image";
 
 import Animated, {
     useSharedValue,
@@ -48,6 +50,11 @@ import Animated, {
 import { LinearGradient } from "expo-linear-gradient";
 import { FlashList } from "@shopify/flash-list";
 import { BottomProgressiveBlur } from "../../components/ui/BottomProgressiveBlur";
+import {
+    listFavoriteMarkets,
+    removeFavoriteMarket,
+    type FavoriteMarketRecord,
+} from "../../lib/favoriteMarkets";
 
 const AnimatedFlashList = Animated.createAnimatedComponent(FlashList);
 const CATEGORY_PRIORITY = [
@@ -254,29 +261,74 @@ function formatCompactMoney(value: number): { whole: string; decimal: string } {
     };
 }
 
-function sortMarketsForOdds(markets: Market[], key: OddsSortKey, direction: OddsSortDirection): Market[] {
-    const list = [...markets];
+function formatVolumeLabel(value: number): string {
+    if (!Number.isFinite(value) || value <= 0) return "$0 Vol";
+    if (value >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(1)}B Vol`;
+    if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M Vol`;
+    if (value >= 1_000) return `$${(value / 1_000).toFixed(1)}K Vol`;
+    return `$${Math.round(value).toLocaleString("en-US")} Vol`;
+}
 
-    if (key === "ticker") {
-        return list.sort((a, b) => {
-            const aLabel = (a.ticker || a.title || "").toLowerCase();
-            const bLabel = (b.ticker || b.title || "").toLowerCase();
-            return aLabel.localeCompare(bLabel);
-        });
-    }
+function formatResolveLabel(resolveDate?: string): string | null {
+    if (!resolveDate) return null;
 
-    if (key === "price") {
-        return list.sort((a, b) => b.yesPrice - a.yesPrice);
-    }
+    const parsed = new Date(resolveDate);
+    if (Number.isNaN(parsed.getTime())) return null;
 
-    if (key === "volume") {
-        return list.sort((a, b) => getMarketVolumeScore(b) - getMarketVolumeScore(a));
-    }
+    return `Ends ${parsed.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+    })}`;
+}
+
+function getGroupHighestYesPrice(group: MarketGroup): number {
+    return group.markets.reduce((highest, market) => {
+        return Math.max(highest, Number.isFinite(market.yesPrice) ? market.yesPrice : 0);
+    }, 0);
+}
+
+function getGroupLowestYesPrice(group: MarketGroup): number {
+    return group.markets.reduce((lowest, market) => {
+        const nextPrice = Number.isFinite(market.yesPrice) ? market.yesPrice : 0;
+        return Math.min(lowest, nextPrice);
+    }, 1);
+}
+
+function sortMarketsWithinGroup(markets: Market[]): Market[] {
+    return [...markets].sort((a, b) => {
+        const priceDiff = (Number.isFinite(b.yesPrice) ? b.yesPrice : 0) - (Number.isFinite(a.yesPrice) ? a.yesPrice : 0);
+        if (priceDiff !== 0) return priceDiff;
+
+        return (a.title || "").localeCompare(b.title || "", undefined, { sensitivity: "base" });
+    });
+}
+
+function sortMarketGroupsForOdds(
+    groups: MarketGroup[],
+    key: OddsSortKey,
+    direction: OddsSortDirection,
+    fallbackOrder: Map<string, number>
+): MarketGroup[] {
+    const list = [...groups];
 
     return list.sort((a, b) => {
-        const aChange = (a.yesPrice - 0.5) * 100;
-        const bChange = (b.yesPrice - 0.5) * 100;
-        return direction === "up" ? bChange - aChange : aChange - bChange;
+        if (key === "ticker") {
+            const titleDiff = a.title.toLowerCase().localeCompare(b.title.toLowerCase());
+            if (titleDiff !== 0) return titleDiff;
+        } else if (key === "price") {
+            const priceDiff = getGroupHighestYesPrice(b) - getGroupHighestYesPrice(a);
+            if (priceDiff !== 0) return priceDiff;
+        } else if (key === "volume") {
+            const volumeDiff = b.volume - a.volume;
+            if (volumeDiff !== 0) return volumeDiff;
+        } else {
+            const aOddsValue = direction === "up" ? getGroupHighestYesPrice(a) : getGroupLowestYesPrice(a);
+            const bOddsValue = direction === "up" ? getGroupHighestYesPrice(b) : getGroupLowestYesPrice(b);
+            const changeDiff = direction === "up" ? bOddsValue - aOddsValue : aOddsValue - bOddsValue;
+            if (changeDiff !== 0) return changeDiff;
+        }
+
+        return (fallbackOrder.get(a.eventId) ?? 0) - (fallbackOrder.get(b.eventId) ?? 0);
     });
 }
 
@@ -307,6 +359,9 @@ export default function HomeFeed() {
     const [tradingMarket, setTradingMarket] = useState<Market | null>(null);
     const [selectedSide, setSelectedSide] = useState<TradeSide>("YES");
     const [isDepositModalVisible, setIsDepositModalVisible] = useState(false);
+    const [favoriteMarkets, setFavoriteMarkets] = useState<FavoriteMarketRecord[]>([]);
+    const [favoritesLoading, setFavoritesLoading] = useState(false);
+    const [showFavoritesSheet, setShowFavoritesSheet] = useState(false);
 
     const [nextCursor, setNextCursor] = useState<string | null>(null);
     const [isFetchingMore, setIsFetchingMore] = useState(false);
@@ -330,6 +385,16 @@ export default function HomeFeed() {
     const handleDeposit = () => {
         setIsDepositModalVisible(true);
     };
+
+    const loadFavorites = useCallback(async () => {
+        setFavoritesLoading(true);
+        try {
+            const items = await listFavoriteMarkets();
+            setFavoriteMarkets(items);
+        } finally {
+            setFavoritesLoading(false);
+        }
+    }, []);
 
     const handleCopyPrimaryAddress = useCallback(async () => {
         if (!primaryAddress) return;
@@ -391,6 +456,8 @@ export default function HomeFeed() {
     const [marketsLoading, setMarketsLoading] = useState(true);
     const [marketsError, setMarketsError] = useState<string | null>(null);
     const marketLoadSeq = useRef(0);
+    const listRef = useRef<any>(null);
+    const previousCategoryRef = useRef(selectedCategory);
 
     const loadMarkets = useCallback(async () => {
         const seq = ++marketLoadSeq.current;
@@ -552,9 +619,9 @@ export default function HomeFeed() {
         setVisibleGroupLimit(
             selectedCategory === "Popular" ? POPULAR_GROUP_BATCH_SIZE : CATEGORY_GROUP_BATCH_SIZE
         );
-        await Promise.all([loadMarkets(), loadBalances()]);
+        await Promise.all([loadMarkets(), loadBalances(), loadFavorites()]);
         setRefreshing(false);
-    }, [loadMarkets, loadBalances, selectedCategory]);
+    }, [loadBalances, loadFavorites, loadMarkets, selectedCategory]);
 
     const scrollY = useSharedValue(0);
     const onScroll = useAnimatedScrollHandler({
@@ -571,12 +638,17 @@ export default function HomeFeed() {
         loadBalances();
     }, [loadBalances]);
 
+    useEffect(() => {
+        loadFavorites();
+    }, [loadFavorites]);
+
     const navigation = useNavigation();
     useEffect(() => {
         // Handle initial load and tab switches
         const unsubscribeFocus = navigation.addListener('focus', () => {
             loadMarkets();
             loadBalances();
+            loadFavorites();
         });
 
         // Handle explicit tab taps (refresh when already on page)
@@ -590,7 +662,7 @@ export default function HomeFeed() {
             unsubscribeFocus();
             unsubscribeTabPress();
         };
-    }, [navigation, loadMarkets, loadBalances, onRefresh]);
+    }, [navigation, loadBalances, loadFavorites, loadMarkets, onRefresh]);
 
     useEffect(() => {
         const id = setInterval(() => setListNowMs(Date.now()), 60_000);
@@ -658,6 +730,20 @@ export default function HomeFeed() {
         );
     }, [selectedCategory]);
 
+    useEffect(() => {
+        if (previousCategoryRef.current === selectedCategory) return;
+
+        previousCategoryRef.current = selectedCategory;
+        scrollY.value = 0;
+
+        requestAnimationFrame(() => {
+            listRef.current?.scrollToOffset({
+                offset: 0,
+                animated: false,
+            });
+        });
+    }, [scrollY, selectedCategory]);
+
     const filteredMarkets = useMemo(() => {
         const now = listNowMs;
         const notEndedMarkets = markets.filter((market) => !isEndedMarket(market, now));
@@ -665,13 +751,6 @@ export default function HomeFeed() {
             .filter((market) => isTradeableMarket(market));
         const volumeMarkets = notEndedMarkets
             .filter((market) => hasVolume(market));
-
-        const sortByResolveThenVolume = (list: Market[]) =>
-            [...list].sort((a, b) => {
-                const resolveDelta = getMarketResolveMs(a) - getMarketResolveMs(b);
-                if (resolveDelta !== 0) return resolveDelta;
-                return getMarketVolumeScore(b) - getMarketVolumeScore(a);
-            });
 
         if (selectedCategory === "15 Min") {
             // Live/15m kategorisinde 0 vol market göstermeyelim.
@@ -687,39 +766,20 @@ export default function HomeFeed() {
                 );
             }
             if (strict15m.length === 0 && fallback0x01.length > 0) {
-                return sortMarketsForOdds(sortByResolveThenVolume(fallback0x01), oddsSortKey, oddsSortDirection);
+                return fallback0x01;
             }
-            return sortMarketsForOdds(sortByResolveThenVolume(strict15m), oddsSortKey, oddsSortDirection);
+            return strict15m;
         }
 
         if (selectedCategory === "Popular") {
-            const visibleEventIds = popularEventOrder.slice(0, visibleGroupLimit);
-            const visibleEventIdSet = new Set(visibleEventIds);
-            const marketsByEventId = new Map<string, Market[]>();
-
-            for (const market of volumeMarkets) {
-                const eventId = market.eventId || market.id;
-                if (!visibleEventIdSet.has(eventId)) continue;
-                const bucket = marketsByEventId.get(eventId);
-                if (bucket) {
-                    bucket.push(market);
-                } else {
-                    marketsByEventId.set(eventId, [market]);
-                }
-            }
-
-            return visibleEventIds.flatMap((eventId) =>
-                sortMarketsForOdds(marketsByEventId.get(eventId) ?? [], oddsSortKey, oddsSortDirection)
-            );
+            return volumeMarkets;
         }
 
-
         const selectedLower = selectedCategory.toLowerCase();
-        const categoryMarkets = volumeMarkets.filter(
+        return volumeMarkets.filter(
             (m) => getMarketCategory(m).toLowerCase() === selectedLower
         );
-        return sortMarketsForOdds(categoryMarkets, oddsSortKey, oddsSortDirection);
-    }, [markets, selectedCategory, listNowMs, oddsSortKey, oddsSortDirection, popularEventOrder, visibleGroupLimit]);
+    }, [markets, selectedCategory, listNowMs]);
 
     const handleSelectOddsSort = useCallback((key: OddsSortKey) => {
         if (key === "change" && oddsSortKey === "change") {
@@ -770,8 +830,72 @@ export default function HomeFeed() {
             }
         }
 
-        return Array.from(groupMap.values()).slice(0, visibleGroupLimit);
-    }, [filteredMarkets, visibleGroupLimit]);
+        const grouped = Array.from(groupMap.values()).map((group) => ({
+            ...group,
+            markets: sortMarketsWithinGroup(group.markets),
+        }));
+        const defaultOrder = new Map<string, number>();
+
+        grouped.forEach((group, index) => {
+            defaultOrder.set(group.eventId, index);
+        });
+
+        const popularOrder = new Map<string, number>();
+        popularEventOrder.forEach((eventId, index) => {
+            popularOrder.set(eventId, index);
+        });
+
+        const fallbackOrder = selectedCategory === "Popular" ? popularOrder : defaultOrder;
+
+        return sortMarketGroupsForOdds(grouped, oddsSortKey, oddsSortDirection, fallbackOrder)
+            .slice(0, visibleGroupLimit);
+    }, [filteredMarkets, oddsSortDirection, oddsSortKey, popularEventOrder, selectedCategory, visibleGroupLimit]);
+
+    const liveMarketsById = useMemo(() => {
+        const next = new Map<string, Market>();
+
+        for (const item of markets) {
+            next.set(String(item.marketId || item.id), item);
+        }
+
+        return next;
+    }, [markets]);
+
+    const favoriteMarketItems = useMemo(() => {
+        return favoriteMarkets.map((item) => {
+            const liveMarket = liveMarketsById.get(item.marketId);
+
+            if (!liveMarket) {
+                return item;
+            }
+
+            return {
+                ...item,
+                category: liveMarket.category || item.category,
+                imageUrl: liveMarket.imageUrl ?? item.imageUrl,
+                yesPrice: Number.isFinite(liveMarket.yesPrice) ? liveMarket.yesPrice : item.yesPrice,
+                volume: Number.isFinite(liveMarket.volume) ? liveMarket.volume : item.volume,
+                resolveDate: liveMarket.resolveDate || item.resolveDate,
+            };
+        });
+    }, [favoriteMarkets, liveMarketsById]);
+
+    const handleOpenFavorites = useCallback(() => {
+        setShowFavoritesSheet(true);
+    }, []);
+
+    const handleFavoritePress = useCallback((item: FavoriteMarketRecord) => {
+        setShowFavoritesSheet(false);
+        router.push({
+            pathname: "/market/[id]",
+            params: { id: item.routeId },
+        });
+    }, [router]);
+
+    const handleRemoveFavorite = useCallback(async (routeId: string) => {
+        const next = await removeFavoriteMarket(routeId);
+        setFavoriteMarkets(next);
+    }, []);
 
     const renderFilterChips = (prefix: "home" | "sticky", sticky = false) => (
 
@@ -801,6 +925,17 @@ export default function HomeFeed() {
             </Pressable>
 
             <View style={styles.filtersDivider} />
+
+            <Pressable style={styles.oddsPill} onPress={handleOpenFavorites}>
+                <Text style={styles.oddsPillText}>Favorites</Text>
+                {favoriteMarketItems.length > 0 ? (
+                    <View style={styles.favoritesPillCount}>
+                        <Text style={styles.favoritesPillCountText}>
+                            {favoriteMarketItems.length > 9 ? "9+" : favoriteMarketItems.length}
+                        </Text>
+                    </View>
+                ) : null}
+            </Pressable>
 
             {filterItems.map((category) => {
                 const isSelected = selectedCategory === category;
@@ -943,6 +1078,7 @@ export default function HomeFeed() {
             <StatusBar style="dark" />
             {renderStickyHeader()}
             <AnimatedFlashList
+                ref={listRef as any}
                 onScroll={onScroll}
                 scrollEventThrottle={16}
                 data={groupedFilteredMarkets}
@@ -995,6 +1131,117 @@ export default function HomeFeed() {
                 }
             />
             <BottomProgressiveBlur style={styles.feedBottomBlur} />
+
+            <Modal
+                visible={showFavoritesSheet}
+                animationType="slide"
+                transparent
+                onRequestClose={() => setShowFavoritesSheet(false)}
+            >
+                <Pressable style={styles.sortSheetOverlay} onPress={() => setShowFavoritesSheet(false)}>
+                    <Pressable style={styles.favoritesSheetContainer} onPress={(e) => e.stopPropagation()}>
+                        <View style={styles.sortSheetHandle} />
+                        <View style={styles.favoritesSheetHeader}>
+                            <Text style={styles.sortSheetTitle}>Favorites</Text>
+                            <Text style={styles.favoritesSheetCount}>
+                                {favoriteMarketItems.length}
+                            </Text>
+                        </View>
+
+                        {favoritesLoading ? (
+                            <View style={styles.favoriteEmptyState}>
+                                <ActivityIndicator size="small" color="#8d8d8d" />
+                            </View>
+                        ) : favoriteMarketItems.length === 0 ? (
+                            <View style={styles.favoriteEmptyState}>
+                                <Text style={styles.favoriteEmptyTitle}>No favorites yet</Text>
+                                <Text style={styles.favoriteEmptyText}>
+                                    Mark a market with the Favorites button and it will appear here.
+                                </Text>
+                            </View>
+                        ) : (
+                            <ScrollView
+                                style={styles.favoritesList}
+                                contentContainerStyle={styles.favoritesListContent}
+                                showsVerticalScrollIndicator={false}
+                            >
+                                {favoriteMarketItems.map((item) => {
+                                    const resolveLabel = formatResolveLabel(item.resolveDate);
+                                    const initial = (item.title || item.category || "M").charAt(0).toUpperCase();
+
+                                    return (
+                                        <View key={item.routeId} style={styles.favoriteRow}>
+                                            <Pressable
+                                                style={styles.favoriteRowMain}
+                                                onPress={() => handleFavoritePress(item)}
+                                            >
+                                                <View style={styles.favoriteRowImage}>
+                                                    {item.imageUrl ? (
+                                                        <Image
+                                                            source={item.imageUrl}
+                                                            style={styles.favoriteRowImageAsset}
+                                                            contentFit="cover"
+                                                        />
+                                                    ) : (
+                                                        <Text style={styles.favoriteRowImageFallback}>{initial}</Text>
+                                                    )}
+                                                </View>
+
+                                                <View style={styles.favoriteRowContent}>
+                                                    <Text style={styles.favoriteRowTitle} numberOfLines={2}>
+                                                        {item.title}
+                                                    </Text>
+                                                    {item.subtitle ? (
+                                                        <Text style={styles.favoriteRowSubtitle} numberOfLines={1}>
+                                                            {item.subtitle}
+                                                        </Text>
+                                                    ) : null}
+
+                                                    <View style={styles.favoriteCategoryPill}>
+                                                        <Text style={styles.favoriteCategoryText}>
+                                                            {item.category || "Market"}
+                                                        </Text>
+                                                    </View>
+
+                                                    <View style={styles.favoriteMetaRow}>
+                                                        <Text style={styles.favoriteMetaText}>
+                                                            {Math.round(item.yesPrice * 100)}% Yes
+                                                        </Text>
+                                                        <View style={styles.favoriteMetaDot} />
+                                                        <Text style={styles.favoriteMetaText}>
+                                                            {formatVolumeLabel(item.volume)}
+                                                        </Text>
+                                                        {resolveLabel ? (
+                                                            <>
+                                                                <View style={styles.favoriteMetaDot} />
+                                                                <Text style={styles.favoriteMetaText}>
+                                                                    {resolveLabel}
+                                                                </Text>
+                                                            </>
+                                                        ) : null}
+                                                    </View>
+                                                </View>
+                                            </Pressable>
+
+                                            <Pressable
+                                                style={styles.favoriteRemoveButton}
+                                                onPress={() => handleRemoveFavorite(item.routeId)}
+                                            >
+                                                <Star
+                                                    size={18}
+                                                    color="#F59E0B"
+                                                    fill="#F59E0B"
+                                                    strokeWidth={1.8}
+                                                />
+                                            </Pressable>
+                                        </View>
+                                    );
+                                })}
+                            </ScrollView>
+                        )}
+                    </Pressable>
+                </Pressable>
+            </Modal>
 
             <Modal
                 visible={showOddsSortSheet}
@@ -1238,6 +1485,21 @@ const styles = StyleSheet.create({
         lineHeight: 18,
         fontWeight: "500",
     },
+    favoritesPillCount: {
+        minWidth: 18,
+        height: 18,
+        borderRadius: 999,
+        backgroundColor: "#171717",
+        alignItems: "center",
+        justifyContent: "center",
+        paddingHorizontal: 4,
+    },
+    favoritesPillCountText: {
+        color: "#fff",
+        fontSize: 11,
+        lineHeight: 12,
+        fontWeight: "700",
+    },
     filtersDivider: {
         width: 1,
         height: 15,
@@ -1414,6 +1676,148 @@ const styles = StyleSheet.create({
     stickyHeaderBorder: {
         height: 1,
         backgroundColor: "rgba(0,0,0,0.05)",
+    },
+    favoritesSheetContainer: {
+        backgroundColor: "#fff",
+        borderTopLeftRadius: 24,
+        borderTopRightRadius: 24,
+        borderCurve: "continuous",
+        paddingHorizontal: 16,
+        paddingTop: 12,
+        paddingBottom: 24,
+        maxHeight: "82%",
+    },
+    favoritesSheetHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        marginBottom: 16,
+    },
+    favoritesSheetCount: {
+        minWidth: 36,
+        height: 36,
+        borderRadius: 18,
+        backgroundColor: "rgba(0,0,0,0.06)",
+        textAlign: "center",
+        textAlignVertical: "center",
+        color: "#171717",
+        fontSize: 16,
+        lineHeight: 36,
+        fontWeight: "700",
+        overflow: "hidden",
+    },
+    favoritesList: {
+        maxHeight: 460,
+    },
+    favoritesListContent: {
+        gap: 12,
+        paddingBottom: 12,
+    },
+    favoriteEmptyState: {
+        alignItems: "center",
+        justifyContent: "center",
+        paddingVertical: 36,
+        paddingHorizontal: 20,
+        gap: 8,
+    },
+    favoriteEmptyTitle: {
+        color: "#171717",
+        fontSize: 18,
+        lineHeight: 22,
+        fontWeight: "700",
+    },
+    favoriteEmptyText: {
+        color: "rgba(0,0,0,0.55)",
+        fontSize: 14,
+        lineHeight: 20,
+        textAlign: "center",
+    },
+    favoriteRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 12,
+        padding: 14,
+        borderRadius: 18,
+        backgroundColor: "#f7f7f7",
+    },
+    favoriteRowMain: {
+        flex: 1,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 12,
+    },
+    favoriteRowImage: {
+        width: 52,
+        height: 52,
+        borderRadius: 16,
+        backgroundColor: "rgba(0,0,0,0.08)",
+        overflow: "hidden",
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    favoriteRowImageAsset: {
+        width: "100%",
+        height: "100%",
+    },
+    favoriteRowImageFallback: {
+        color: "#171717",
+        fontSize: 20,
+        fontWeight: "700",
+    },
+    favoriteRowContent: {
+        flex: 1,
+        gap: 6,
+    },
+    favoriteRowTitle: {
+        color: "#171717",
+        fontSize: 16,
+        lineHeight: 20,
+        fontWeight: "700",
+    },
+    favoriteRowSubtitle: {
+        color: "rgba(0,0,0,0.55)",
+        fontSize: 13,
+        lineHeight: 16,
+        fontWeight: "500",
+    },
+    favoriteCategoryPill: {
+        alignSelf: "flex-start",
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        borderRadius: 999,
+        backgroundColor: "rgba(59,130,247,0.12)",
+    },
+    favoriteCategoryText: {
+        color: "#3b82f7",
+        fontSize: 12,
+        lineHeight: 14,
+        fontWeight: "700",
+    },
+    favoriteMetaRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        flexWrap: "wrap",
+        gap: 6,
+    },
+    favoriteMetaText: {
+        color: "rgba(0,0,0,0.56)",
+        fontSize: 12,
+        lineHeight: 16,
+        fontWeight: "600",
+    },
+    favoriteMetaDot: {
+        width: 4,
+        height: 4,
+        borderRadius: 999,
+        backgroundColor: "rgba(0,0,0,0.18)",
+    },
+    favoriteRemoveButton: {
+        width: 36,
+        height: 36,
+        borderRadius: 18,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "#fff",
     },
     feedBottomBlur: {
         zIndex: 40,

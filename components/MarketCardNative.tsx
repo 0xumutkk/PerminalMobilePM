@@ -102,12 +102,24 @@ function generateSparklinePath(data: { timestamp: number; value: number }[], wid
     return { path: d, isPositive };
 }
 
+function sortMarketsForDisplay(markets: Market[]): Market[] {
+    return [...markets].sort((a, b) => {
+        const priceDiff = (Number.isFinite(b.yesPrice) ? b.yesPrice : 0) - (Number.isFinite(a.yesPrice) ? a.yesPrice : 0);
+        if (priceDiff !== 0) return priceDiff;
+
+        return (a.title || "").localeCompare(b.title || "", undefined, { sensitivity: "base" });
+    });
+}
+
 export const MarketCardNative = memo(function MarketCardNative({ group, onBuyYes, onBuyNo, isFirst, isLast }: MarketCardNativeProps) {
     const router = useRouter();
-    const isMultiChoice = group.markets.length > 1;
+    const orderedMarkets = group.markets.length > 1
+        ? sortMarketsForDisplay(group.markets)
+        : group.markets;
+    const isMultiChoice = orderedMarkets.length > 1;
 
     // Derived properties for binary market (if applicable)
-    const binaryMarket = !isMultiChoice ? group.markets[0] : null;
+    const binaryMarket = !isMultiChoice ? orderedMarkets[0] : null;
     let priceChange = 0;
     let sparkline = { path: "", isPositive: true };
 
@@ -192,7 +204,7 @@ export const MarketCardNative = memo(function MarketCardNative({ group, onBuyYes
             {/* Market Specific Content */}
             {isMultiChoice ? (
                 <View style={styles.multiList}>
-                    {group.markets.slice(0, 3).map((m) => {
+                    {orderedMarkets.slice(0, 3).map((m) => {
                         const cleanLabel = getCleanMarketTitle(m.title, group.title);
                         return (
                             <View key={m.id} style={styles.choiceRow}>
@@ -215,10 +227,10 @@ export const MarketCardNative = memo(function MarketCardNative({ group, onBuyYes
                 </View>
             ) : (
                 <View style={styles.binaryButtons}>
-                    <Pressable style={styles.btnLargeYes} onPress={() => onBuyYes?.(group.markets[0])}>
+                    <Pressable style={styles.btnLargeYes} onPress={() => onBuyYes?.(orderedMarkets[0])}>
                         <Text style={styles.btnTextLargeYes}>Yes</Text>
                     </Pressable>
-                    <Pressable style={styles.btnLargeNo} onPress={() => onBuyNo?.(group.markets[0])}>
+                    <Pressable style={styles.btnLargeNo} onPress={() => onBuyNo?.(orderedMarkets[0])}>
                         <Text style={styles.btnTextLargeNo}>No</Text>
                     </Pressable>
                 </View>
@@ -456,5 +468,3 @@ const styles = StyleSheet.create({
         color: "#8d8d8d",
     },
 });
-
-

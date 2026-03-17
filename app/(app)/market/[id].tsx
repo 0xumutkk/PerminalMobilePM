@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Pressable, Platform } from "react-native";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { ArrowLeft, Info, TrendingUp, Users, Calendar, Plus, Minus, X, ChevronDown, ChevronUp, Database, ArrowUpCircle, BarChart3, ReceiptCent, Star, Share2 } from "lucide-react-native";
@@ -20,6 +20,7 @@ import { GlassHeader } from "../../../components/ui/GlassHeader";
 import { BottomProgressiveBlur } from "../../../components/ui/BottomProgressiveBlur";
 import { usePositions } from "../../../hooks/usePositions";
 import { getMarketResolution, type OutcomeSide } from "../../../lib/marketResolution";
+import { isFavoriteRoute, toggleFavoriteMarket } from "../../../lib/favoriteMarkets";
 import {
     fetchClusteredMarketChartFromJupiter,
     fetchMarketActivityTradesFromJupiter,
@@ -209,6 +210,7 @@ function MarketDetailScreen() {
     const [chartAssetLabel, setChartAssetLabel] = useState<string | undefined>(undefined);
     const [multiChoiceMarkets, setMultiChoiceMarkets] = useState<Market[]>([]);
     const [tradingMarket, setTradingMarket] = useState<Market | null>(null);
+    const [isFavorite, setIsFavorite] = useState(false);
     const chartCacheRef = useRef<Record<string, Partial<Record<ChartRange, ChartSnapshot>>>>({});
     const displayedChartSnapshotRef = useRef<ChartSnapshot | null>(null);
 
@@ -217,6 +219,16 @@ function MarketDetailScreen() {
     const walletAddress = isWalletConnected && solanaWallet.wallets?.[0] ? solanaWallet.wallets[0].address : null;
 
     const { activePositions, refresh: refreshPositions } = usePositions();
+
+    const loadFavoriteState = useCallback(async () => {
+        if (!id) {
+            setIsFavorite(false);
+            return;
+        }
+
+        const nextValue = await isFavoriteRoute(id);
+        setIsFavorite(nextValue);
+    }, [id]);
 
     const applyChartSnapshot = useCallback((snapshot: ChartSnapshot) => {
         displayedChartSnapshotRef.current = snapshot;
@@ -332,6 +344,20 @@ function MarketDetailScreen() {
             console.warn("[MarketDetail] Failed to refresh balances:", balanceError);
         });
     }, [market, refreshVisibleMarketBalances]);
+
+    useEffect(() => {
+        loadFavoriteState().catch((favoriteError) => {
+            console.warn("[MarketDetail] Failed to load favorite state:", favoriteError);
+        });
+    }, [loadFavoriteState]);
+
+    useFocusEffect(
+        useCallback(() => {
+            loadFavoriteState().catch((favoriteError) => {
+                console.warn("[MarketDetail] Failed to refresh favorite state:", favoriteError);
+            });
+        }, [loadFavoriteState])
+    );
 
     useEffect(() => {
         if (!market) return;
@@ -545,6 +571,36 @@ function MarketDetailScreen() {
         };
     }, [activeTab, market?.id, market?.marketId]);
 
+    const handleToggleFavorite = useCallback(async () => {
+        if (!market || !id) return;
+
+        try {
+            const eventRoute = market.eventId && id === market.eventId && singleParam !== "true";
+            const title = eventRoute ? (market.eventTitle || market.title) : market.title;
+            const subtitle = !eventRoute && market.eventTitle && market.eventTitle !== market.title
+                ? market.eventTitle
+                : undefined;
+
+            const { favorited } = await toggleFavoriteMarket(market, {
+                routeId: id,
+                title,
+                subtitle,
+            });
+
+            setIsFavorite(favorited);
+
+            Alert.alert(
+                favorited ? "Favorite added" : "Favorite removed",
+                favorited
+                    ? "Market added to your favorites."
+                    : "Market removed from your favorites."
+            );
+        } catch (favoriteError) {
+            console.error("[MarketDetail] Failed to toggle favorite:", favoriteError);
+            Alert.alert("Favorite failed", "Couldn't update favorite right now.");
+        }
+    }, [id, market, singleParam]);
+
     if (loading) {
         return (
             <View style={[styles.container, styles.centered]}>
@@ -672,10 +728,15 @@ function MarketDetailScreen() {
                         router.back();
                     }
                 }}
-                rightIcon1={<Star color="#000" size={20} strokeWidth={2} />}
-                onRightAction1={() => {
-                    Alert.alert("Favorite", "Market added to favorites!");
-                }}
+                rightIcon1={
+                    <Star
+                        color={isFavorite ? "#F59E0B" : "#000"}
+                        fill={isFavorite ? "#F59E0B" : "transparent"}
+                        size={20}
+                        strokeWidth={2}
+                    />
+                }
+                onRightAction1={handleToggleFavorite}
                 rightIcon2={<Share2 color="#000" size={20} strokeWidth={2} />}
                 onRightAction2={() => {
                     Alert.alert("Share", "Sharing feature coming soon!");
