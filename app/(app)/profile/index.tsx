@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
+import { View, Text, StyleSheet, Pressable } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
@@ -58,72 +58,77 @@ export default function ProfileScreen() {
 
     const displayedFollowers = followersCount ?? profile?.followers_count;
     const displayedFollowing = followingCount ?? profile?.following_count;
+    const displayedTrades = profile?.trades_count ?? 0;
+    const displayName = profileLoading ? "Loading..." : profile?.display_name || profile?.username || "User";
+    const username = `@${profile?.username || "user"}`;
+    const bioText = profile?.bio?.trim() || "Do Everything Great or Die";
 
     return (
         <SafeAreaView style={styles.container} edges={['top']}>
-            {/* Header / Navbar */}
-            <View style={styles.navbar}>
-                <View style={styles.usernameRow}>
-                    <Text style={styles.navbarUsername}>@{profile?.username || "user"}</Text>
-                    <View style={styles.xLogo}>
-                        <Text style={styles.xLogoText}>𝕏</Text>
+            <View style={styles.headerShell}>
+                <View style={styles.navbar}>
+                    <View style={styles.usernameRow}>
+                        <Text style={styles.navbarUsername}>{username}</Text>
+                        <View style={styles.xLogo}>
+                            <Text style={styles.xLogoText}>𝕏</Text>
+                        </View>
                     </View>
-                </View>
-                <View style={styles.navbarActions}>
-                    <TouchableOpacity style={styles.navButton} onPress={() => router.push("/profile/history")}>
-                        <Clock size={20} color="#000" strokeWidth={1.8} />
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.navButton} onPress={handleLogout}>
-                        <Settings size={20} color="#000" strokeWidth={1.8} />
-                    </TouchableOpacity>
-                </View>
-            </View>
-
-            {/* Profile Header */}
-            <View style={styles.headerSection}>
-                <View style={styles.avatarRow}>
-                    <View style={styles.avatarNameGroup}>
-                        <Image
-                            source={profile?.avatar_url ? { uri: profile.avatar_url } : require("../../../assets/icon.png")}
-                            style={styles.avatar}
-                        />
-                        <Text style={styles.displayName}>
-                            {profileLoading ? "Loading..." : profile?.display_name || profile?.username || "User"}
-                        </Text>
-                    </View>
-                    <View style={styles.mainStats}>
-                        <View style={[styles.statBox, { width: 54 }]}>
-                            <Text style={styles.statValue}>{formatCount(displayedFollowers)}</Text>
-                            <Text style={styles.statLabel}>Followers</Text>
-                        </View>
-                        <View style={[styles.statBox, { width: 53 }]}>
-                            <Text style={styles.statValue}>{formatCount(displayedFollowing)}</Text>
-                            <Text style={styles.statLabel}>Following</Text>
-                        </View>
-                        <View style={[styles.statBox, { width: 42 }]}>
-                            <Text style={styles.statValue}>{formatCount(profile?.trades_count, true)}</Text>
-                            <Text style={styles.statLabel}>Trades</Text>
-                        </View>
+                    <View style={styles.navbarActions}>
+                        <Pressable style={styles.navButton} onPress={() => router.push("/profile/history")}>
+                            <Clock size={20} color="#111" strokeWidth={2} />
+                        </Pressable>
+                        <Pressable style={styles.navButton} onPress={handleLogout}>
+                            <Settings size={20} color="#111" strokeWidth={2} />
+                        </Pressable>
                     </View>
                 </View>
 
-                <Text style={styles.bio}>{profile?.bio || "Do Everything Great or Die"}</Text>
+                <View style={styles.headerSection}>
+                    <View style={styles.headerMainRow}>
+                        <View style={styles.identityCluster}>
+                            <View style={styles.nameBlock}>
+                                <Image
+                                    source={profile?.avatar_url ? { uri: profile.avatar_url } : require("../../../assets/icon.png")}
+                                    style={styles.avatar}
+                                />
+                                <Text style={styles.displayName} numberOfLines={1}>
+                                    {displayName}
+                                </Text>
+                            </View>
+                        </View>
+                        <View style={styles.mainStats}>
+                            <View style={[styles.statBox, styles.statBoxFollowers]}>
+                                <Text style={styles.statValue}>{formatCount(displayedFollowers)}</Text>
+                                <Text style={styles.statLabel}>Followers</Text>
+                            </View>
+                            <View style={[styles.statBox, styles.statBoxFollowing]}>
+                                <Text style={styles.statValue}>{formatCount(displayedFollowing)}</Text>
+                                <Text style={styles.statLabel}>Following</Text>
+                            </View>
+                            <View style={[styles.statBox, styles.statBoxTrades]}>
+                                <Text style={styles.statValue}>{formatCount(displayedTrades, true)}</Text>
+                                <Text style={styles.statLabel}>Trades</Text>
+                            </View>
+                        </View>
+                    </View>
+                    <Text style={styles.bio}>{bioText}</Text>
+                </View>
             </View>
 
             {/* Tabs */}
             <View style={styles.tabContainer}>
-                <TouchableOpacity
+                <Pressable
                     style={[styles.tab, activeTab === "Portfolio" && styles.activeTab]}
                     onPress={() => setActiveTab("Portfolio")}
                 >
                     <Text style={[styles.tabText, activeTab === "Portfolio" && styles.activeTabText]}>Portfolio</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
+                </Pressable>
+                <Pressable
                     style={[styles.tab, activeTab === "Posts" && styles.activeTab]}
                     onPress={() => setActiveTab("Posts")}
                 >
                     <Text style={[styles.tabText, activeTab === "Posts" && styles.activeTabText]}>Posts</Text>
-                </TouchableOpacity>
+                </Pressable>
             </View>
 
             {/* Tab Content */}
@@ -151,12 +156,17 @@ const styles = StyleSheet.create({
         flex: 1,
         backgroundColor: "#f9f9f9",
     },
+    headerShell: {
+        paddingHorizontal: 8,
+        paddingTop: 2,
+        paddingBottom: 8,
+    },
     navbar: {
         flexDirection: "row",
         justifyContent: "space-between",
         alignItems: "center",
-        paddingHorizontal: 8,
-        paddingVertical: 8,
+        paddingTop: 6,
+        paddingBottom: 8,
     },
     usernameRow: {
         flexDirection: "row",
@@ -171,56 +181,77 @@ const styles = StyleSheet.create({
         letterSpacing: -0.4,
     },
     xLogo: {
-        width: 20,
-        height: 20,
+        width: 18,
+        height: 18,
         borderRadius: 5,
-        backgroundColor: "#171717",
+        backgroundColor: "#111",
         alignItems: "center",
         justifyContent: "center",
     },
     xLogoText: {
-        fontSize: 12,
         color: "#fff",
+        fontSize: 11,
         fontWeight: "700",
     },
     navbarActions: {
         flexDirection: "row",
         gap: 8,
     },
-    navButton: {},
+    navButton: {
+        width: 24,
+        height: 24,
+        alignItems: "center",
+        justifyContent: "center",
+    },
     headerSection: {
-        paddingHorizontal: 8,
         paddingBottom: 16,
     },
-    avatarRow: {
+    headerMainRow: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 52,
+        justifyContent: "space-between",
     },
-    avatarNameGroup: {
+    identityCluster: {
+        flex: 1,
+        minWidth: 0,
+        marginRight: 12,
+    },
+    nameBlock: {
         flexDirection: "row",
         alignItems: "center",
         gap: 8,
+        minWidth: 0,
     },
     avatar: {
         width: 48,
         height: 48,
-        borderRadius: 24,
+        borderRadius: 48,
         backgroundColor: "rgba(0,0,0,0.05)",
     },
     displayName: {
         color: "#000",
         fontSize: 24,
-        fontWeight: "bold",
+        fontWeight: "700",
         letterSpacing: -0.6,
         lineHeight: 24,
+        flexShrink: 1,
     },
     mainStats: {
         flexDirection: "row",
-        gap: 22,
+        alignItems: "center",
+        gap: 8,
     },
     statBox: {
         alignItems: "center",
+    },
+    statBoxFollowers: {
+        width: 54,
+    },
+    statBoxFollowing: {
+        width: 60,
+    },
+    statBoxTrades: {
+        width: 42,
     },
     statValue: {
         color: "#000",
@@ -230,12 +261,11 @@ const styles = StyleSheet.create({
         textAlign: "center",
     },
     statLabel: {
-        color: "#000",
+        color: "rgba(0,0,0,0.5)",
         fontSize: 12,
         fontWeight: "600",
-        opacity: 0.5,
         letterSpacing: -0.3,
-        textAlign: "left",
+        textAlign: "center",
     },
     bio: {
         color: "#000",

@@ -19,6 +19,7 @@ import { getTokenBalance } from "../../../lib/solana";
 import { GlassHeader } from "../../../components/ui/GlassHeader";
 import { BottomProgressiveBlur } from "../../../components/ui/BottomProgressiveBlur";
 import { usePositions } from "../../../hooks/usePositions";
+import { getMarketResolution, type OutcomeSide } from "../../../lib/marketResolution";
 import {
     fetchClusteredMarketChartFromJupiter,
     fetchMarketActivityTradesFromJupiter,
@@ -595,6 +596,17 @@ function MarketDetailScreen() {
         marketPositions.some((position) => position.amount > 0) ||
         yesBalance > 0.000001 ||
         noBalance > 0.000001;
+    const heldSide: OutcomeSide | null =
+        yesBalance > noBalance + 0.000001
+            ? "YES"
+            : noBalance > yesBalance + 0.000001
+                ? "NO"
+                : yesPositionAmount > noPositionAmount
+                    ? "YES"
+                    : noPositionAmount > yesPositionAmount
+                        ? "NO"
+                        : currentPosition?.side ?? null;
+    const marketResolution = getMarketResolution(market, heldSide);
 
     const preferredBuySide: TradeSide = currentPosition ? currentPosition.side : initialSide;
     const preferredSellSide: TradeSide =
@@ -615,6 +627,13 @@ function MarketDetailScreen() {
     };
 
     const handleOpenTrade = (side: TradeSide, mode: TradeMode = "BUY", marketToTrade?: Market) => {
+        const targetMarket = marketToTrade ?? market;
+        const targetPosition = activePositions.find((position) => position.marketId === (targetMarket.marketId || targetMarket.id)) ?? null;
+        const targetResolution = getMarketResolution(targetMarket, targetPosition?.side ?? null);
+        if (targetResolution.isResolved) {
+            Alert.alert("Resolved market", `${targetResolution.resultLabel}. ${targetResolution.detailLabel}`);
+            return;
+        }
         setInitialSide(side);
         setInitialTradeMode(mode);
         setTradingMarket(marketToTrade ?? null);
@@ -674,6 +693,18 @@ function MarketDetailScreen() {
                         <Text style={styles.marketTitle}>{market.eventTitle || market.title}</Text>
                         {market.eventTitle && market.title !== market.eventTitle && (
                             <Text style={styles.marketSubTitle}>{market.title}</Text>
+                        )}
+                        {marketResolution.isResolved && (
+                            <View style={styles.resolutionRow}>
+                                <View style={[styles.resolutionPill, marketResolution.winningSide === "NO" ? styles.resolutionPillNo : styles.resolutionPillYes]}>
+                                    <Text style={styles.resolutionPillText}>{marketResolution.resultLabel}</Text>
+                                </View>
+                                {marketResolution.positionOutcomeLabel ? (
+                                    <Text style={[styles.resolutionOutcomeText, marketResolution.positionOutcome === "lost" ? styles.resolutionOutcomeLost : styles.resolutionOutcomeWon]}>
+                                        You {marketResolution.positionOutcomeLabel.toLowerCase()}
+                                    </Text>
+                                ) : null}
+                            </View>
                         )}
                         {!!marketIddiaText && (
                             <Text style={styles.marketIddiaText} numberOfLines={2}>
@@ -747,10 +778,21 @@ function MarketDetailScreen() {
                                                 const mId = m.marketId || m.id;
                                                 const mPos = activePositions.find(p => p.marketId === mId);
                                                 const hasMOpenPosition = !!mPos && mPos.amount > 0;
+                                                const mResolution = getMarketResolution(m, mPos?.side ?? null);
+
+                                                if (mResolution.isResolved) {
+                                                    return (
+                                                        <View style={[styles.marketCardResolved, mResolution.winningSide === "NO" ? styles.marketCardResolvedNo : styles.marketCardResolvedYes]}>
+                                                            <Text style={styles.marketCardResolvedTitle}>{mResolution.resultLabel}</Text>
+                                                            <Text style={styles.marketCardResolvedSubtitle}>
+                                                                {mResolution.positionOutcomeLabel ? `You ${mResolution.positionOutcomeLabel.toLowerCase()}` : mResolution.detailLabel}
+                                                            </Text>
+                                                        </View>
+                                                    );
+                                                }
 
                                                 if (hasMOpenPosition) {
                                                     const mSide = mPos.side;
-                                                    const otherSide = mSide === "YES" ? "NO" : "YES";
                                                     return (
                                                         <>
                                                             <Pressable
@@ -1058,63 +1100,74 @@ function MarketDetailScreen() {
             {/* Sticky Footer Actions */}
             <BottomProgressiveBlur style={styles.footerBlurLayer} />
             <View style={styles.footer}>
-                <Pressable
-                    style={({ pressed }) => [
-                        styles.tradeButton,
-                        styles.buyYesButton,
-                        pressed && styles.pressed
-                    ]}
-                    onPress={() => handleOpenTrade(primaryFooterSide, "BUY")}
-                >
-                    {SUPPORTS_GLASS ? (
-                        <GlassView
-                            style={StyleSheet.absoluteFill}
-                            glassEffectStyle="clear"
-                            /* @ts-ignore */
-                            refraction={60}
-                            depth={30}
-                            frost={6}
-                        />
-                    ) : (
-                        <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(255, 255, 255, 0.8)" }]} />
-                    )}
-                    <LinearGradient
-                        colors={["rgba(255, 255, 255, 0.4)", "rgba(195, 195, 195, 0.4)", "rgba(255, 255, 255, 0.4)"]}
-                        start={{ x: 1, y: 0 }}
-                        end={{ x: 0, y: 1 }}
-                        style={StyleSheet.absoluteFill}
-                    />
-                    <Text style={styles.tradeButtonText}>{primaryFooterLabel}</Text>
-                </Pressable>
+                {marketResolution.isResolved ? (
+                    <View style={[styles.resolvedFooterCard, marketResolution.winningSide === "NO" ? styles.resolvedFooterCardNo : styles.resolvedFooterCardYes]}>
+                        <Text style={styles.resolvedFooterTitle}>{marketResolution.resultLabel}</Text>
+                        <Text style={styles.resolvedFooterSubtitle}>
+                            {marketResolution.positionOutcomeLabel ? `You ${marketResolution.positionOutcomeLabel.toLowerCase()} this market.` : marketResolution.detailLabel}
+                        </Text>
+                    </View>
+                ) : (
+                    <>
+                        <Pressable
+                            style={({ pressed }) => [
+                                styles.tradeButton,
+                                styles.buyYesButton,
+                                pressed && styles.pressed
+                            ]}
+                            onPress={() => handleOpenTrade(primaryFooterSide, "BUY")}
+                        >
+                            {SUPPORTS_GLASS ? (
+                                <GlassView
+                                    style={StyleSheet.absoluteFill}
+                                    glassEffectStyle="clear"
+                                    /* @ts-ignore */
+                                    refraction={60}
+                                    depth={30}
+                                    frost={6}
+                                />
+                            ) : (
+                                <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(255, 255, 255, 0.8)" }]} />
+                            )}
+                            <LinearGradient
+                                colors={["rgba(255, 255, 255, 0.4)", "rgba(195, 195, 195, 0.4)", "rgba(255, 255, 255, 0.4)"]}
+                                start={{ x: 1, y: 0 }}
+                                end={{ x: 0, y: 1 }}
+                                style={StyleSheet.absoluteFill}
+                            />
+                            <Text style={styles.tradeButtonText}>{primaryFooterLabel}</Text>
+                        </Pressable>
 
-                <Pressable
-                    style={({ pressed }) => [
-                        styles.tradeButton,
-                        styles.buyNoButton,
-                        pressed && styles.pressed
-                    ]}
-                    onPress={() => handleOpenTrade(secondaryFooterSide, secondaryFooterMode)}
-                >
-                    {SUPPORTS_GLASS ? (
-                        <GlassView
-                            style={StyleSheet.absoluteFill}
-                            glassEffectStyle="clear"
-                            /* @ts-ignore */
-                            refraction={60}
-                            depth={30}
-                            frost={6}
-                        />
-                    ) : (
-                        <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(255, 255, 255, 0.8)" }]} />
-                    )}
-                    <LinearGradient
-                        colors={["rgba(255, 255, 255, 0.4)", "rgba(195, 195, 195, 0.4)", "rgba(255, 255, 255, 0.4)"]}
-                        start={{ x: 1, y: 0 }}
-                        end={{ x: 0, y: 1 }}
-                        style={StyleSheet.absoluteFill}
-                    />
-                    <Text style={styles.tradeButtonText}>{secondaryFooterLabel}</Text>
-                </Pressable>
+                        <Pressable
+                            style={({ pressed }) => [
+                                styles.tradeButton,
+                                styles.buyNoButton,
+                                pressed && styles.pressed
+                            ]}
+                            onPress={() => handleOpenTrade(secondaryFooterSide, secondaryFooterMode)}
+                        >
+                            {SUPPORTS_GLASS ? (
+                                <GlassView
+                                    style={StyleSheet.absoluteFill}
+                                    glassEffectStyle="clear"
+                                    /* @ts-ignore */
+                                    refraction={60}
+                                    depth={30}
+                                    frost={6}
+                                />
+                            ) : (
+                                <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(255, 255, 255, 0.8)" }]} />
+                            )}
+                            <LinearGradient
+                                colors={["rgba(255, 255, 255, 0.4)", "rgba(195, 195, 195, 0.4)", "rgba(255, 255, 255, 0.4)"]}
+                                start={{ x: 1, y: 0 }}
+                                end={{ x: 0, y: 1 }}
+                                style={StyleSheet.absoluteFill}
+                            />
+                            <Text style={styles.tradeButtonText}>{secondaryFooterLabel}</Text>
+                        </Pressable>
+                    </>
+                )}
             </View>
         </SafeAreaView>
     );
@@ -1200,6 +1253,41 @@ const styles = StyleSheet.create({
         fontSize: 16,
         fontWeight: "500",
         marginTop: 2,
+    },
+    resolutionRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        flexWrap: "wrap",
+        gap: 8,
+        marginTop: 8,
+    },
+    resolutionPill: {
+        borderRadius: 999,
+        paddingHorizontal: 10,
+        paddingVertical: 5,
+    },
+    resolutionPillYes: {
+        backgroundColor: "rgba(16, 185, 129, 0.14)",
+    },
+    resolutionPillNo: {
+        backgroundColor: "rgba(239, 68, 68, 0.14)",
+    },
+    resolutionPillText: {
+        color: "#171717",
+        fontSize: 12,
+        fontWeight: "800",
+        textTransform: "uppercase",
+        letterSpacing: 0.2,
+    },
+    resolutionOutcomeText: {
+        fontSize: 13,
+        fontWeight: "700",
+    },
+    resolutionOutcomeWon: {
+        color: "#10b981",
+    },
+    resolutionOutcomeLost: {
+        color: "#ef4444",
     },
     marketIddiaText: {
         marginTop: 4,
@@ -1602,6 +1690,31 @@ const styles = StyleSheet.create({
         gap: 8,
         marginBottom: 16,
     },
+    marketCardResolved: {
+        borderRadius: 12,
+        paddingHorizontal: 14,
+        paddingVertical: 12,
+        marginBottom: 16,
+    },
+    marketCardResolvedYes: {
+        backgroundColor: "rgba(16, 185, 129, 0.14)",
+    },
+    marketCardResolvedNo: {
+        backgroundColor: "rgba(239, 68, 68, 0.14)",
+    },
+    marketCardResolvedTitle: {
+        color: "#171717",
+        fontSize: 14,
+        fontWeight: "800",
+        textTransform: "uppercase",
+        letterSpacing: 0.2,
+    },
+    marketCardResolvedSubtitle: {
+        color: "rgba(23,23,23,0.72)",
+        fontSize: 12,
+        fontWeight: "600",
+        marginTop: 2,
+    },
     btnCardYes: {
         flex: 1,
         height: 48,
@@ -1734,6 +1847,34 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         gap: 12,
         zIndex: 1,
+    },
+    resolvedFooterCard: {
+        flex: 1,
+        borderRadius: 18,
+        paddingHorizontal: 18,
+        paddingVertical: 14,
+        borderWidth: 1,
+    },
+    resolvedFooterCardYes: {
+        backgroundColor: "rgba(16, 185, 129, 0.16)",
+        borderColor: "rgba(16, 185, 129, 0.2)",
+    },
+    resolvedFooterCardNo: {
+        backgroundColor: "rgba(239, 68, 68, 0.16)",
+        borderColor: "rgba(239, 68, 68, 0.2)",
+    },
+    resolvedFooterTitle: {
+        color: "#171717",
+        fontSize: 16,
+        fontWeight: "800",
+        textTransform: "uppercase",
+        letterSpacing: 0.2,
+    },
+    resolvedFooterSubtitle: {
+        color: "rgba(23,23,23,0.75)",
+        fontSize: 13,
+        fontWeight: "600",
+        marginTop: 2,
     },
     footerBlurLayer: {
         zIndex: 0,

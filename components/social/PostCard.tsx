@@ -1,13 +1,14 @@
 import React, { useState, memo } from "react";
-import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { Alert, View, Text, TouchableOpacity, StyleSheet } from "react-native";
 import { Image } from "expo-image";
 import { FeedPost } from "../../hooks/useFeed";
+import type { Market } from "../../lib/mock-data";
+import { getMarketResolution, getTradeMetadataSide } from "../../lib/marketResolution";
 import { formatTimeAgo } from "../../lib/utils";
 import { ArrowUp, ArrowDown, Repeat2, Share2, ShieldCheck } from "lucide-react-native";
 import { useInteractions } from "../../hooks/useInteractions";
 import { CircularGauge } from "./CircularGauge";
-import { fetchJupiterMarket } from "../../lib/jupiter";
-import { microUsdToProbability } from "../../lib/types/jupiter.types";
+import { hasResolvablePostMarket, resolvePostMarket, resolvePostMarketId } from "../../lib/postMarkets";
 
 interface PostCardProps {
     post: FeedPost;
@@ -21,6 +22,8 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
     const [likesCount, setLikesCount] = useState(post.likes_count || 0);
     const [reposted, setReposted] = useState(post.user_has_reposted || false);
     const [repostsCount, setRepostsCount] = useState(post.reposts_count || 0);
+    const [tradeLoading, setTradeLoading] = useState(false);
+    const [marketState, setMarketState] = useState<Market | null>(null);
 
     const handleLike = async () => {
         const newLiked = !liked;
@@ -44,24 +47,40 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
         }
     };
 
-    // Live market data for gauge
+    const handleTradePress = async () => {
+        if (!onTradePress || tradeLoading) return;
+
+        setTradeLoading(true);
+        try {
+            const resolvedMarketId = await resolvePostMarketId(post);
+            if (!resolvedMarketId) {
+                Alert.alert("Market unavailable", "Bu posttaki market artik acilamiyor.");
+                return;
+            }
+
+            onTradePress(resolvedMarketId);
+        } finally {
+            setTradeLoading(false);
+        }
+    };
+
     const [liveProbability, setLiveProbability] = useState<number>(50);
     React.useEffect(() => {
-        if (!post.market_id) return;
+        if (!hasResolvablePostMarket(post)) return;
         let cancelled = false;
-        fetchJupiterMarket(post.market_id).then(m => {
-            if (cancelled || !m) return;
-            const buyYes = m.pricing?.buyYesPriceUsd;
-            const sellYes = m.pricing?.sellYesPriceUsd;
-            if (buyYes != null && sellYes != null) {
-                const prob = (microUsdToProbability(buyYes) + microUsdToProbability(sellYes)) / 2;
-                setLiveProbability(Math.round(prob * 100));
-            } else if (buyYes != null) {
-                setLiveProbability(Math.round(microUsdToProbability(buyYes) * 100));
-            }
-        });
+        resolvePostMarket(post)
+            .then((market) => {
+                if (cancelled || !market) return;
+                setMarketState(market);
+                setLiveProbability(Math.round(market.yesPrice * 100));
+            })
+            .catch((error) => {
+                if (!cancelled) {
+                    console.warn("[PostCard] Failed to resolve post market:", error);
+                }
+            });
         return () => { cancelled = true; };
-    }, [post.market_id]);
+    }, [post]);
 
     const formatCount = (count: number) => {
         if (count >= 1000) return `${(count / 1000).toFixed(1)}K`;
@@ -117,6 +136,12 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
     const isDarkCard = isPosition || isSold || isBought || isWon;
     const footerTextColor = isDarkCard ? "#FFFFFF" : "#000000";
     const footerSubTextColor = isDarkCard ? "rgba(255,255,255,0.7)" : "rgba(0,0,0,0.5)";
+    const canTrade = hasResolvablePostMarket(post);
+    const heldSide = isPosition ? getTradeMetadataSide(tradeData) : null;
+    const resolution = getMarketResolution(marketState, heldSide);
+    const isResolved = resolution.isResolved;
+    const resolutionAccentStyle = resolution.winningSide === "NO" ? styles.resolutionAccentNo : styles.resolutionAccentYes;
+    const resolutionButtonStyle = resolution.winningSide === "NO" ? styles.tradeActionButtonResolvedNo : styles.tradeActionButtonResolvedYes;
 
     return (
         <View style={styles.container}>
@@ -152,9 +177,13 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
 
                 {/* PnL and Verification */}
                 <View style={styles.rightHeader}>
-                    {isPosition && pnlPercent > 0 && (
+                    {resolution.positionOutcomeLabel ? (
+                        <Text style={[styles.resolutionOutcomeText, resolution.positionOutcome === "lost" ? styles.resolutionOutcomeLost : styles.resolutionOutcomeWon]}>
+                            {resolution.positionOutcomeLabel}
+                        </Text>
+                    ) : isPosition && pnlPercent > 0 ? (
                         <Text style={styles.pnlText}>+{pnlPercent.toLocaleString()}%</Text>
-                    )}
+                    ) : null}
                     {post.is_verified && (
                         <View style={styles.proofBadge}>
                             <ShieldCheck size={12} color="#34d399" />
@@ -188,6 +217,15 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
                             </Text>
                             <CircularGauge percentage={liveProbability} size={32} />
                         </View>
+
+                        {isResolved && (
+                            <View style={[styles.resolutionBanner, resolutionAccentStyle]}>
+                                <Text style={styles.resolutionBannerText}>{resolution.resultLabel}</Text>
+                                <Text style={styles.resolutionBannerSubText}>
+                                    {resolution.positionOutcomeLabel ? `Position ${resolution.positionOutcomeLabel.toLowerCase()}` : resolution.detailLabel}
+                                </Text>
+                            </View>
+                        )}
 
                         {/* Middle Row (Metric Pill + Details) - Only for Position/Sold/Bought/Won */}
                         {(isPosition || isSold || isBought || isWon) && (
@@ -225,10 +263,18 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
                         </View>
 
                         <TouchableOpacity
-                            style={styles.tradeActionButton}
-                            onPress={() => { if (post.market_id) onTradePress?.(post.market_id); }}
+                            style={[
+                                styles.tradeActionButton,
+                                isResolved && styles.tradeActionButtonResolved,
+                                isResolved && resolutionButtonStyle,
+                                (!isResolved && (!canTrade || tradeLoading)) && styles.tradeActionButtonDisabled,
+                            ]}
+                            onPress={isResolved ? undefined : handleTradePress}
+                            disabled={isResolved || !canTrade || tradeLoading}
                         >
-                            <Text style={styles.tradeActionButtonText}>Trade</Text>
+                            <Text style={styles.tradeActionButtonText}>
+                                {isResolved ? resolution.actionLabel : tradeLoading ? "Loading..." : "Trade"}
+                            </Text>
                         </TouchableOpacity>
                     </View>
                 </View>
@@ -333,6 +379,17 @@ const styles = StyleSheet.create({
         color: "#34c759",
         letterSpacing: -0.5,
     },
+    resolutionOutcomeText: {
+        fontSize: 18,
+        fontWeight: "800",
+        letterSpacing: -0.4,
+    },
+    resolutionOutcomeWon: {
+        color: "#10b981",
+    },
+    resolutionOutcomeLost: {
+        color: "#ef4444",
+    },
     proofBadge: {
         flexDirection: "row",
         alignItems: "center",
@@ -379,6 +436,31 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         alignItems: "flex-start",
         gap: 10,
+    },
+    resolutionBanner: {
+        borderRadius: 12,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        marginTop: 10,
+    },
+    resolutionAccentYes: {
+        backgroundColor: "rgba(16, 185, 129, 0.12)",
+    },
+    resolutionAccentNo: {
+        backgroundColor: "rgba(239, 68, 68, 0.12)",
+    },
+    resolutionBannerText: {
+        color: "#171717",
+        fontSize: 13,
+        fontWeight: "800",
+        textTransform: "uppercase",
+        letterSpacing: 0.2,
+    },
+    resolutionBannerSubText: {
+        color: "rgba(23,23,23,0.72)",
+        fontSize: 12,
+        fontWeight: "600",
+        marginTop: 2,
     },
     marketImageWrapper: {
         width: 40,
@@ -466,6 +548,18 @@ const styles = StyleSheet.create({
         borderRadius: 14,
         borderWidth: 2,
         borderColor: "rgba(255,255,255,0.25)",
+    },
+    tradeActionButtonResolved: {
+        borderColor: "transparent",
+    },
+    tradeActionButtonResolvedYes: {
+        backgroundColor: "#10b981",
+    },
+    tradeActionButtonResolvedNo: {
+        backgroundColor: "#ef4444",
+    },
+    tradeActionButtonDisabled: {
+        opacity: 0.5,
     },
     tradeActionButtonText: {
         color: "#fff",

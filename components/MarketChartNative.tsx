@@ -31,8 +31,10 @@ export interface MarketChartNativeProps {
 
 const MAX_POINTS = 60;
 const AXIS_LABEL_WIDTH = 74;
-const SCRUB_TOOLTIP_WIDTH = 156;
+const SCRUB_TOOLTIP_WIDTH = 184;
 const SCRUB_TOOLTIP_HEIGHT = 76;
+const SCRUB_TOOLTIP_ROW_HEIGHT = 20;
+const SCRUB_TOOLTIP_CLUSTER_CHROME_HEIGHT = 34;
 const SCRUB_DOT_SIZE = 12;
 const TIME_RANGES = ["1H", "6H", "1D", "1W", "1M", "ALL"] as const;
 
@@ -56,7 +58,7 @@ interface InterpolatedPoint {
     value: number;
 }
 
-interface ScrubSelection {
+interface ScrubTooltipItem {
     seriesKey: string;
     label?: string;
     color: string;
@@ -64,6 +66,10 @@ interface ScrubSelection {
     y: number;
     timestamp: number;
     value: number;
+}
+
+interface ScrubSelection extends ScrubTooltipItem {
+    items?: ScrubTooltipItem[];
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -131,6 +137,15 @@ function formatTooltipTimestamp(timestamp: number, activeRange: string): string 
         month: "short",
         day: "numeric",
     });
+}
+
+function getScrubTooltipHeight(selection: ScrubSelection | null): number {
+    const itemCount = selection?.items?.length ?? 0;
+    if (itemCount <= 1) return SCRUB_TOOLTIP_HEIGHT;
+    return Math.max(
+        SCRUB_TOOLTIP_HEIGHT,
+        SCRUB_TOOLTIP_CLUSTER_CHROME_HEIGHT + itemCount * SCRUB_TOOLTIP_ROW_HEIGHT
+    );
 }
 
 function buildTickTimestamps(startTs: number, endTs: number, count: number): number[] {
@@ -559,19 +574,16 @@ export function MarketChartNative({
     const scrubTooltipY = useSharedValue(0);
     const scrubOpacity = useSharedValue(0);
     const lastSelectionKeyRef = useRef<string | null>(null);
-    const lockedScrubSeriesKeyRef = useRef<string | null>(null);
 
     const clearScrub = () => {
         scrubOpacity.value = withTiming(0, { duration: 100 });
         lastSelectionKeyRef.current = null;
-        lockedScrubSeriesKeyRef.current = null;
         setScrubSelection(null);
     };
 
     useEffect(() => {
         scrubOpacity.value = 0;
         lastSelectionKeyRef.current = null;
-        lockedScrubSeriesKeyRef.current = null;
         setScrubSelection(null);
     }, [activeRange, clusteredMode, endTs, scrubDataSignature, scrubOpacity, showEmptyState, startTs]);
 
@@ -584,49 +596,41 @@ export function MarketChartNative({
         let nextSelection: ScrubSelection | null = null;
 
         if (clusteredMode) {
-            const lockedGeometry = lockedScrubSeriesKeyRef.current
-                ? clusteredGeometries.find((geometry) => geometry.key === lockedScrubSeriesKeyRef.current) ?? null
-                : null;
-
-            if (lockedGeometry) {
-                const interpolated = interpolateSeriesAtX(lockedGeometry, clampedX, curveType);
-                if (interpolated) {
-                    nextSelection = {
-                        seriesKey: lockedGeometry.key,
-                        label: lockedGeometry.label,
-                        color: lockedGeometry.color,
-                        x: interpolated.x,
-                        y: interpolated.y,
-                        timestamp: interpolated.timestamp,
-                        value: interpolated.value,
-                    };
-                }
+            const allSeriesSelections: ScrubTooltipItem[] = [];
+            for (const geometry of clusteredGeometries) {
+                const interpolated = interpolateSeriesAtX(geometry, clampedX, curveType);
+                if (!interpolated) continue;
+                allSeriesSelections.push({
+                    seriesKey: geometry.key,
+                    label: geometry.label,
+                    color: geometry.color,
+                    x: interpolated.x,
+                    y: interpolated.y,
+                    timestamp: interpolated.timestamp,
+                    value: interpolated.value,
+                });
             }
 
-            if (!nextSelection) {
-            let nearestMatch: { geometry: SeriesGeometry; interpolated: InterpolatedPoint; distance: number } | null = null;
+            allSeriesSelections.sort((left, right) => {
+                const yDistance = left.y - right.y;
+                if (Math.abs(yDistance) > 0.25) return yDistance;
+                return (left.label ?? left.seriesKey).localeCompare(right.label ?? right.seriesKey);
+            });
 
-                for (const geometry of clusteredGeometries) {
-                    const interpolated = interpolateSeriesAtX(geometry, clampedX, curveType);
-                    if (!interpolated) continue;
-                    const distance = Math.abs(interpolated.y - clampedY);
-                    if (!nearestMatch || distance < nearestMatch.distance) {
-                        nearestMatch = { geometry, interpolated, distance };
+            if (allSeriesSelections.length > 0) {
+                let anchorSelection = allSeriesSelections[0];
+                for (const item of allSeriesSelections) {
+                    if (Math.abs(item.y - clampedY) < Math.abs(anchorSelection.y - clampedY)) {
+                        anchorSelection = item;
                     }
                 }
 
-                if (nearestMatch) {
-                    lockedScrubSeriesKeyRef.current = nearestMatch.geometry.key;
-                    nextSelection = {
-                        seriesKey: nearestMatch.geometry.key,
-                        label: nearestMatch.geometry.label,
-                        color: nearestMatch.geometry.color,
-                        x: nearestMatch.interpolated.x,
-                        y: nearestMatch.interpolated.y,
-                        timestamp: nearestMatch.interpolated.timestamp,
-                        value: nearestMatch.interpolated.value,
-                    };
-                }
+                nextSelection = {
+                    ...anchorSelection,
+                    x: anchorSelection.x,
+                    y: clampedY,
+                    items: allSeriesSelections,
+                };
             }
         } else if (singleGeometry) {
             const interpolated = interpolateSeriesAtX(singleGeometry, clampedX, curveType);
@@ -648,6 +652,7 @@ export function MarketChartNative({
             return;
         }
 
+        const tooltipHeight = getScrubTooltipHeight(nextSelection);
         scrubX.value = nextSelection.x;
         scrubY.value = nextSelection.y;
         scrubTooltipX.value = clamp(
@@ -658,15 +663,17 @@ export function MarketChartNative({
             Math.max(chartWidth - SCRUB_TOOLTIP_WIDTH - 8, 8)
         );
         scrubTooltipY.value = clamp(
-            nextSelection.y < 64
+            nextSelection.y < tooltipHeight + 12
                 ? nextSelection.y + 14
-                : nextSelection.y - SCRUB_TOOLTIP_HEIGHT - 12,
+                : nextSelection.y - tooltipHeight - 12,
             8,
-            Math.max(chartHeight - SCRUB_TOOLTIP_HEIGHT - 8, 8)
+            Math.max(chartHeight - tooltipHeight - 8, 8)
         );
         scrubOpacity.value = withTiming(1, { duration: 100 });
 
-        const selectionKey = `${nextSelection.seriesKey}:${Math.round(nextSelection.timestamp / 1000)}:${Math.round(nextSelection.value * 1000)}`;
+        const selectionKey = nextSelection.items?.length
+            ? `cluster:${Math.round(nextSelection.timestamp / 1000)}:${nextSelection.items.map((item) => `${item.seriesKey}:${Math.round(item.value * 1000)}`).join("|")}`
+            : `${nextSelection.seriesKey}:${Math.round(nextSelection.timestamp / 1000)}:${Math.round(nextSelection.value * 1000)}`;
         if (lastSelectionKeyRef.current !== selectionKey) {
             lastSelectionKeyRef.current = selectionKey;
             setScrubSelection(nextSelection);
@@ -676,8 +683,11 @@ export function MarketChartNative({
     const scrubGesture = Gesture.Pan()
         .enabled(!showEmptyState)
         .maxPointers(1)
-        .activateAfterLongPress(180)
+        .minDistance(0)
         .shouldCancelWhenOutside(false)
+        .onBegin((event) => {
+            runOnJS(updateScrubSelection)(event.x, event.y);
+        })
         .onStart((event) => {
             runOnJS(updateScrubSelection)(event.x, event.y);
         })
@@ -704,6 +714,7 @@ export function MarketChartNative({
         left: scrubTooltipX.value,
         top: scrubTooltipY.value,
     }));
+    const scrubTooltipHeight = getScrubTooltipHeight(scrubSelection);
 
     if (showEmptyState) {
         return (
@@ -851,21 +862,38 @@ export function MarketChartNative({
                     {scrubSelection ? (
                         <View style={styles.scrubOverlay} pointerEvents="none">
                             <Animated.View style={[styles.scrubGuide, scrubGuideStyle, { top: padding.top, height: innerHeight }]} />
-                            <Animated.View style={[styles.scrubDot, scrubDotStyle]}>
-                                <View style={[styles.scrubDotInner, { backgroundColor: scrubSelection.color }]} />
-                            </Animated.View>
-                            <Animated.View style={[styles.scrubTooltip, scrubTooltipStyle]}>
-                                {clusteredMode && scrubSelection.label ? (
-                                    <View style={styles.scrubTooltipSeriesRow}>
-                                        <View style={[styles.scrubTooltipSwatch, { backgroundColor: scrubSelection.color }]} />
-                                        <Text style={styles.scrubTooltipSeriesText} numberOfLines={1}>
-                                            {scrubSelection.label}
-                                        </Text>
+                            {clusteredMode && scrubSelection.items?.length ? scrubSelection.items.map((item) => (
+                                <View
+                                    key={`dot-${item.seriesKey}`}
+                                    style={[styles.scrubDot, { left: item.x - SCRUB_DOT_SIZE / 2, top: item.y - SCRUB_DOT_SIZE / 2 }]}
+                                >
+                                    <View style={[styles.scrubDotInner, { backgroundColor: item.color }]} />
+                                </View>
+                            )) : (
+                                <Animated.View style={[styles.scrubDot, scrubDotStyle]}>
+                                    <View style={[styles.scrubDotInner, { backgroundColor: scrubSelection.color }]} />
+                                </Animated.View>
+                            )}
+                            <Animated.View style={[styles.scrubTooltip, scrubTooltipStyle, { minHeight: scrubTooltipHeight }]}>
+                                {clusteredMode && scrubSelection.items?.length ? (
+                                    <View style={styles.scrubTooltipSeriesList}>
+                                        {scrubSelection.items.map((item) => (
+                                            <View key={`tooltip-${item.seriesKey}`} style={styles.scrubTooltipSeriesRow}>
+                                                <View style={[styles.scrubTooltipSwatch, { backgroundColor: item.color }]} />
+                                                <Text style={styles.scrubTooltipSeriesText} numberOfLines={1}>
+                                                    {item.label ?? item.seriesKey}
+                                                </Text>
+                                                <Text style={styles.scrubTooltipSeriesValue}>
+                                                    {formatTooltipValue(item.value, valueType)}
+                                                </Text>
+                                            </View>
+                                        ))}
                                     </View>
-                                ) : null}
-                                <Text style={styles.scrubTooltipValue}>
-                                    {formatTooltipValue(scrubSelection.value, valueType)}
-                                </Text>
+                                ) : (
+                                    <Text style={styles.scrubTooltipValue}>
+                                        {formatTooltipValue(scrubSelection.value, valueType)}
+                                    </Text>
+                                )}
                                 <Text style={styles.scrubTooltipTimestamp}>
                                     {formatTooltipTimestamp(scrubSelection.timestamp, activeRange)}
                                 </Text>
@@ -1046,7 +1074,10 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         alignItems: "center",
         gap: 6,
-        marginBottom: 4,
+        minHeight: SCRUB_TOOLTIP_ROW_HEIGHT,
+    },
+    scrubTooltipSeriesList: {
+        gap: 2,
     },
     scrubTooltipSwatch: {
         width: 8,
@@ -1058,6 +1089,11 @@ const styles = StyleSheet.create({
         fontSize: 11,
         fontWeight: "600",
         color: "rgba(255,255,255,0.78)",
+    },
+    scrubTooltipSeriesValue: {
+        fontSize: 11,
+        fontWeight: "700",
+        color: "#FFFFFF",
     },
     scrubTooltipValue: {
         fontSize: 16,

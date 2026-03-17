@@ -9,7 +9,7 @@ import {
     RefreshControl,
 } from "react-native";
 import { useRouter } from "expo-router";
-import { ChevronDown, Wallet, CircleDollarSign, ArrowUpDown } from "lucide-react-native";
+import { ChevronDown, Wallet, CircleDollarSign } from "lucide-react-native";
 import { MarketChartNative } from "../MarketChartNative";
 import { usePositions } from "../../hooks/usePositions";
 import type { PortfolioPerformanceRange } from "../../hooks/useJupiterPortfolioPerformance";
@@ -37,7 +37,7 @@ export default function PortfolioTab({
 }: PortfolioTabProps) {
     const router = useRouter();
     const { activePositions, closedPositions, isLoading, refresh: refreshPositions } = usePositions();
-    const [activeExpanded, setActiveExpanded] = useState(true);
+    const [activeExpanded, setActiveExpanded] = useState(false);
     const [closedExpanded, setClosedExpanded] = useState(false);
 
     const onPullToRefresh = async () => {
@@ -90,7 +90,7 @@ export default function PortfolioTab({
             maximumFractionDigits: 2,
         })}`;
     };
-    const performanceLabel = performanceRange === "ALL" ? "ALL-TIME" : performanceRange;
+    const performanceLabel = performanceRange === "ALL" ? "All" : performanceRange;
 
     return (
         <ScrollView
@@ -102,25 +102,19 @@ export default function PortfolioTab({
         >
             <View style={styles.valueSection}>
                 <View style={styles.valueHeader}>
-                    <View style={styles.primaryMetric}>
-                        <Text style={styles.metricCaption}>Portfolio Value</Text>
-                        <Text style={styles.totalValue}>
-                            ${totalPortfolioValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                        </Text>
-                    </View>
+                    <Text style={styles.totalValue}>
+                        ${totalPortfolioValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </Text>
                     <View style={styles.pnlRow}>
-                        <Text style={styles.metricCaption}>Realized PnL</Text>
-                        <View style={styles.pnlValueRow}>
-                            <Text
-                                style={[
-                                    styles.pnlText,
-                                    typeof realizedPnlUsd === "number" && realizedPnlUsd < 0 ? styles.pnlTextNegative : null,
-                                ]}
-                            >
-                                {formatSignedPnl(realizedPnlUsd)}
-                            </Text>
-                            <Text style={styles.pnlLabel}>{performanceLabel}</Text>
-                        </View>
+                        <Text
+                            style={[
+                                styles.pnlText,
+                                typeof realizedPnlUsd === "number" && realizedPnlUsd < 0 ? styles.pnlTextNegative : null,
+                            ]}
+                        >
+                            {formatSignedPnl(realizedPnlUsd)}
+                        </Text>
+                        <Text style={styles.pnlLabel}>{performanceLabel}</Text>
                     </View>
                 </View>
 
@@ -140,25 +134,25 @@ export default function PortfolioTab({
                         </View>
                     ) : null}
                 </View>
-            </View>
 
-            <View style={styles.summaryContainer}>
-                <View style={styles.summaryCard}>
-                    <View style={styles.cardHeader}>
-                        <Wallet size={20} color="#007aff" fill="#007aff" strokeWidth={1} />
-                        <Text style={styles.cardTitle}>Positions</Text>
+                <View style={styles.summaryContainer}>
+                    <View style={styles.summaryCard}>
+                        <View style={styles.cardHeader}>
+                            <Wallet size={20} color="#007aff" fill="#007aff" strokeWidth={1} />
+                            <Text style={styles.cardTitle}>Positions</Text>
+                        </View>
+                        <View style={styles.cardValueBox}>
+                            <Text style={styles.cardValue}>{formatValue(totalPositionValue)}</Text>
+                        </View>
                     </View>
-                    <View style={styles.cardValueBox}>
-                        <Text style={styles.cardValue}>{formatValue(totalPositionValue)}</Text>
-                    </View>
-                </View>
-                <View style={styles.summaryCard}>
-                    <View style={styles.cardHeader}>
-                        <CircleDollarSign size={20} color="#34c759" fill="#34c759" strokeWidth={1} />
-                        <Text style={styles.cardTitle}>USD</Text>
-                    </View>
-                    <View style={styles.cardValueBox}>
-                        <Text style={styles.cardValue}>{formatValue(usdcBalance || 0)}</Text>
+                    <View style={styles.summaryCard}>
+                        <View style={styles.cardHeader}>
+                            <CircleDollarSign size={20} color="#34c759" fill="#34c759" strokeWidth={1} />
+                            <Text style={styles.cardTitle}>Cash</Text>
+                        </View>
+                        <View style={styles.cardValueBox}>
+                            <Text style={styles.cardValue}>{formatValue(usdcBalance || 0)}</Text>
+                        </View>
                     </View>
                 </View>
             </View>
@@ -166,23 +160,18 @@ export default function PortfolioTab({
             <View style={styles.positionsBlock}>
                 <TouchableOpacity style={styles.sectionHeader} onPress={() => setActiveExpanded((v) => !v)}>
                     <Text style={styles.sectionTitle}>Active Positions</Text>
-                    <ChevronDown
-                        size={20}
-                        color="#000"
-                        style={[styles.caretIcon, activeExpanded && styles.caretIconExpanded]}
-                    />
+                    <View style={styles.sectionMeta}>
+                        <Text style={styles.sectionCount}>{activePositions.length}</Text>
+                        <ChevronDown
+                            size={20}
+                            color="#000"
+                            style={[styles.caretIcon, activeExpanded && styles.caretIconExpanded]}
+                        />
+                    </View>
                 </TouchableOpacity>
 
                 {activeExpanded ? (
                     <>
-                        <View style={styles.sortRow}>
-                            <Text style={styles.sortText}>Sort by</Text>
-                            <View style={styles.sortRight}>
-                                <Text style={styles.sortText}>Top</Text>
-                                <ArrowUpDown size={18} color="rgba(0,0,0,0.5)" />
-                            </View>
-                        </View>
-
                         <View style={styles.positionsList}>
                             {isLoading ? (
                                 <ActivityIndicator color="#34c759" style={{ margin: 20 }} />
@@ -259,32 +248,19 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         justifyContent: "space-between",
         alignItems: "flex-end",
-        paddingHorizontal: 16,
+        paddingHorizontal: 9,
         paddingTop: 8,
-    },
-    primaryMetric: {
-        gap: 4,
-    },
-    metricCaption: {
-        color: "rgba(0,0,0,0.45)",
-        fontSize: 11,
-        fontWeight: "700",
-        letterSpacing: 0.3,
-        textTransform: "uppercase",
     },
     totalValue: {
         color: "#000",
         fontSize: 24,
-        fontWeight: "700",
-        letterSpacing: -0.6,
+        fontWeight: "800",
+        letterSpacing: -0.2,
     },
     pnlRow: {
-        alignItems: "flex-end",
-        gap: 4,
-    },
-    pnlValueRow: {
         flexDirection: "row",
         alignItems: "flex-end",
+        gap: 3,
     },
     pnlText: {
         color: "#34c759",
@@ -301,7 +277,7 @@ const styles = StyleSheet.create({
     },
     chartContainer: {
         minHeight: 248,
-        marginTop: 12,
+        marginTop: 8,
         marginHorizontal: 8,
         position: "relative",
     },
@@ -355,17 +331,23 @@ const styles = StyleSheet.create({
         letterSpacing: -0.8,
     },
     positionsBlock: {
-        backgroundColor: "#eee",
+        backgroundColor: "#fff",
         paddingHorizontal: 8,
         paddingTop: 8,
         paddingBottom: 12,
-        marginTop: 8,
+        borderTopWidth: 1,
+        borderTopColor: "#d9d9d9",
     },
     sectionHeader: {
         flexDirection: "row",
         justifyContent: "space-between",
         alignItems: "center",
         width: "100%",
+        paddingVertical: 2,
+    },
+    sectionMeta: {
+        flexDirection: "row",
+        alignItems: "center",
     },
     caretIcon: {
         opacity: 0.5,
@@ -377,24 +359,6 @@ const styles = StyleSheet.create({
         color: "#000",
         fontSize: 16,
         fontWeight: "500",
-        letterSpacing: -0.4,
-    },
-    sortRow: {
-        flexDirection: "row",
-        justifyContent: "space-between",
-        alignItems: "center",
-        marginTop: 5,
-    },
-    sortRight: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 2,
-    },
-    sortText: {
-        color: "#000",
-        fontSize: 16,
-        fontWeight: "500",
-        opacity: 0.5,
         letterSpacing: -0.4,
     },
     positionsList: {
@@ -411,6 +375,7 @@ const styles = StyleSheet.create({
         alignItems: "center",
         width: "100%",
         marginTop: 8,
+        paddingVertical: 2,
     },
     closedRight: {
         flexDirection: "row",

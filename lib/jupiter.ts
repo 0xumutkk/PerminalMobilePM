@@ -162,6 +162,59 @@ function shouldIncludeJupiterMarketInUi(jupMarket: JupiterMarket): boolean {
     return hasExecutableQuote(jupMarket) || hasMarketLiquiditySignal(jupMarket);
 }
 
+function buildStandaloneMarketFromJupiterMarket(jupMarket: JupiterMarket): Market | null {
+    const marketId = String(jupMarket.marketId ?? "").trim();
+    if (!marketId) return null;
+
+    const buyYes = jupMarket.pricing?.buyYesPriceUsd ?? null;
+    const sellYes = jupMarket.pricing?.sellYesPriceUsd ?? null;
+    const yesPriceCandidates = [buyYes, sellYes]
+        .map((value) => microUsdToProbability(value))
+        .filter((value) => Number.isFinite(value));
+    const yesPrice = yesPriceCandidates.length > 0
+        ? yesPriceCandidates.reduce((sum, value) => sum + value, 0) / yesPriceCandidates.length
+        : 0.5;
+
+    const closeTime = jupMarket.metadata?.closeTime;
+    const resolveDate = toIsoDateString(closeTime) || new Date().toISOString();
+    const title = String(jupMarket.metadata?.title ?? marketId).trim() || marketId;
+
+    return {
+        id: marketId,
+        marketId,
+        title,
+        description:
+            String(jupMarket.metadata?.rulesPrimary ?? jupMarket.metadata?.rulesSecondary ?? "").trim() || undefined,
+        category: "Other",
+        yesPrice: Math.max(0, Math.min(1, yesPrice)),
+        volume: coerceNumber(jupMarket.pricing?.volume) ?? 0,
+        volume24h: coerceNumber(jupMarket.pricing?.volume24h) ?? 0,
+        openInterest: coerceNumber(jupMarket.pricing?.openInterest) ?? 0,
+        liquidity: coerceNumber(jupMarket.pricing?.liquidityDollars) ?? 0,
+        liquidityScore: Math.min(100, Math.max(0, coerceNumber(jupMarket.pricing?.liquidityDollars) ?? 0)),
+        resolveDate,
+        provider: "polymarket",
+        yesMint: "",
+        noMint: "",
+        isInitialized: true,
+        hasLiveQuotes: buyYes != null || sellYes != null,
+        isTradeable: shouldIncludeJupiterMarketInUi(jupMarket),
+        yesLabel: "Yes",
+        noLabel: "No",
+        buyYesPriceUsd: buyYes,
+        buyNoPriceUsd: jupMarket.pricing?.buyNoPriceUsd ?? null,
+        sellYesPriceUsd: sellYes,
+        sellNoPriceUsd: jupMarket.pricing?.sellNoPriceUsd ?? null,
+        result: jupMarket.result || undefined,
+        ticker: marketId,
+        eventTicker: undefined,
+        seriesTicker: undefined,
+        strikePeriod: undefined,
+        status: jupMarket.status,
+        priceHistory: [],
+    };
+}
+
 // ─── Category Management ────────────────────────────────────────
 
 const JUPITER_CATEGORIES = [
@@ -973,12 +1026,20 @@ export async function fetchMarketForApp(id: string): Promise<Market | null> {
                     const hasMarket = event.markets?.some((m) => m.marketId === id);
                     if (hasMarket) {
                         const markets = jupiterEventToMarkets(event);
-                        if (markets.length > 0) {
-                            const market = markets[0];
-                            if (isLikelyKalshiMarketId(market.marketId || market.id)) {
+                        const matchedMarket = markets.find((market) => (market.marketId || market.id) === id);
+                        if (matchedMarket) {
+                            if (isLikelyKalshiMarketId(matchedMarket.marketId || matchedMarket.id)) {
                                 return null;
                             }
-                            return market;
+                            return matchedMarket;
+                        }
+
+                        if (markets.length > 0) {
+                            const fallbackMarket = markets[0];
+                            if (isLikelyKalshiMarketId(fallbackMarket.marketId || fallbackMarket.id)) {
+                                return null;
+                            }
+                            return fallbackMarket;
                         }
                     }
                 }
@@ -988,7 +1049,21 @@ export async function fetchMarketForApp(id: string): Promise<Market | null> {
                 start = nextStart;
             }
         }
-        // Strict polymarket mode: no parent polymarket event => no market.
+
+        const titleQuery = String(jupMarket.metadata?.title ?? "").trim();
+        if (titleQuery) {
+            const titleMatches = await fetchJupiterSearch(titleQuery);
+            const exactMatch = titleMatches.find((market) => (market.marketId || market.id) === jupMarket.marketId);
+            if (exactMatch && !isLikelyKalshiMarketId(exactMatch.marketId || exactMatch.id)) {
+                return exactMatch;
+            }
+        }
+
+        const standaloneMarket = buildStandaloneMarketFromJupiterMarket(jupMarket);
+        if (standaloneMarket && !isLikelyKalshiMarketId(standaloneMarket.marketId || standaloneMarket.id)) {
+            return standaloneMarket;
+        }
+
         return null;
     }
 

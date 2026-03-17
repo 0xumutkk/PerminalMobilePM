@@ -9,22 +9,25 @@ interface PositionCardProps {
 }
 
 function formatCompactNumber(value: number): string {
-    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
-    if (value >= 1_000) return `${(value / 1_000).toFixed(2)}K`;
+    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
     return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
 function formatShares(value: number): string {
-    if (value >= 1000) return `${(value / 1000).toFixed(2)}k`;
+    if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
     return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+function formatCents(value: number): string {
+    const cents = Math.round(value * 100);
+    return `${cents}c`;
 }
 
 export default function PositionCard({ position, onPress }: PositionCardProps) {
     const isPositive = position.pnl >= 0;
     const sideLabel = position.side === "YES" ? "Yes" : "No";
     const sideBadgeStyle = position.side === "YES" ? styles.yesBg : styles.noBg;
-    const cents = Math.round(position.currentPrice * 100);
-    const shareCount = position.amount.toLocaleString(undefined, { maximumFractionDigits: 2 });
 
     return (
         <Pressable style={styles.container} onPress={onPress}>
@@ -33,7 +36,7 @@ export default function PositionCard({ position, onPress }: PositionCardProps) {
                 style={styles.image}
             />
             <View style={styles.contentWrapper}>
-                <View style={[styles.row, { justifyContent: "space-between" }]}>
+                <View style={styles.row}>
                     <View style={styles.details}>
                         <Text style={styles.title} numberOfLines={1}>{position.marketTitle}</Text>
                         <View style={styles.subDetail}>
@@ -41,17 +44,13 @@ export default function PositionCard({ position, onPress }: PositionCardProps) {
                             <View style={[styles.sideBadge, sideBadgeStyle]}>
                                 <Text style={styles.sideText}>{sideLabel}</Text>
                             </View>
-                            <Text style={styles.subText}>Shares</Text>
+                            <Text style={styles.subText}>Shares at {formatCents(position.currentPrice)}</Text>
                         </View>
                     </View>
 
                     <View style={styles.rightSide}>
-                        <Text style={styles.valueLabel}>Worth</Text>
                         <Text style={styles.valueText}>
                             ${formatCompactNumber(position.currentValue)}
-                        </Text>
-                        <Text style={styles.formulaText}>
-                            {shareCount} x {cents}c
                         </Text>
                         <Text style={[styles.pnlText, isPositive ? styles.pnlPositive : styles.pnlNegative]}>
                             {isPositive ? "+" : "-"}${Math.abs(position.pnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -82,14 +81,16 @@ const styles = StyleSheet.create({
     row: {
         flexDirection: "row",
         alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
     },
     details: {
         flex: 1,
-        gap: 8,
+        gap: 6,
     },
     title: {
         color: "#000",
-        fontSize: 16,
+        fontSize: 15,
         fontWeight: "700",
         letterSpacing: -0.4,
         flexShrink: 1,
@@ -101,7 +102,7 @@ const styles = StyleSheet.create({
     },
     subText: {
         color: "#000",
-        fontSize: 12,
+        fontSize: 11,
         fontWeight: "600",
         opacity: 0.5,
     },
@@ -125,29 +126,17 @@ const styles = StyleSheet.create({
     },
     rightSide: {
         alignItems: "flex-end",
-        gap: 4,
-    },
-    valueLabel: {
-        color: "#000",
-        fontSize: 11,
-        fontWeight: "600",
-        opacity: 0.45,
+        gap: 2,
+        minWidth: 84,
     },
     valueText: {
         color: "#000",
         fontSize: 16,
         fontWeight: "700",
     },
-    formulaText: {
-        color: "#000",
-        fontSize: 11,
-        fontWeight: "600",
-        opacity: 0.45,
-    },
     pnlText: {
         fontSize: 12,
         fontWeight: "600",
-        opacity: 0.5,
     },
     pnlPositive: {
         color: "#34c759",

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
     ActivityIndicator,
+    Alert,
     FlatList,
     RefreshControl,
     StyleSheet,
@@ -12,8 +13,11 @@ import { Image } from "expo-image";
 import { useRouter } from "expo-router";
 import Svg, { Circle } from "react-native-svg";
 import { ArrowDown, ArrowUp, Repeat2, Share2 } from "lucide-react-native";
+import type { Market } from "../../lib/mock-data";
 import { FeedPost, useFeed } from "../../hooks/useFeed";
 import { useInteractions } from "../../hooks/useInteractions";
+import { getMarketResolution, getTradeMetadataSide } from "../../lib/marketResolution";
+import { resolvePostMarket, resolvePostMarketId } from "../../lib/postMarkets";
 import { formatTimeAgo } from "../../lib/utils";
 
 interface ProfilePostsTabProps {
@@ -115,6 +119,7 @@ function ProfilePostCard({
     const [upvotes, setUpvotes] = useState(post.likes_count || 0);
     const [reposted, setReposted] = useState(post.user_has_reposted);
     const [repostCount, setRepostCount] = useState(post.reposts_count || 0);
+    const [marketState, setMarketState] = useState<Market | null>(null);
 
     const tradeMetadata = useMemo(() => {
         if (post.trade_metadata && typeof post.trade_metadata === "object" && !Array.isArray(post.trade_metadata)) {
@@ -154,6 +159,33 @@ function ProfilePostCard({
     const tradeShellStyle = isPosition ? styles.positionTradeShell : styles.thesisTradeShell;
     const badgeStyle = isPosition ? styles.positionBadge : styles.thesisBadge;
     const badgeTextStyle = isPosition ? styles.positionBadgeText : styles.thesisBadgeText;
+    const heldSide = isPosition ? getTradeMetadataSide(tradeMetadata) : null;
+    const resolution = getMarketResolution(marketState, heldSide);
+    const isResolved = resolution.isResolved;
+    const displayMarketPercent = isResolved
+        ? (resolution.winningSide === "NO" ? 0 : 100)
+        : marketPercent;
+    const resolutionButtonStyle = resolution.winningSide === "NO" ? styles.tradeButtonResolvedNo : styles.tradeButtonResolvedYes;
+    const resolutionOutcomeStyle = resolution.positionOutcome === "lost" ? styles.resolutionOutcomeLost : styles.resolutionOutcomeWon;
+
+    useEffect(() => {
+        let cancelled = false;
+        resolvePostMarket(post)
+            .then((market) => {
+                if (!cancelled) {
+                    setMarketState(market);
+                }
+            })
+            .catch((error) => {
+                if (!cancelled) {
+                    console.warn("[ProfilePostsTab] Failed to resolve post market:", error);
+                }
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [post]);
 
     const handleToggleLike = async () => {
         const optimistic = !liked;
@@ -200,7 +232,9 @@ function ProfilePostCard({
                             </View>
                         </View>
 
-                        {isPosition ? (
+                        {resolution.positionOutcomeLabel ? (
+                            <Text style={[styles.resolutionOutcomeText, resolutionOutcomeStyle]}>{resolution.positionOutcomeLabel}</Text>
+                        ) : isPosition ? (
                             <Text style={styles.pnlPercent}>{formatPercent(pnlPercent)}</Text>
                         ) : null}
                     </View>
@@ -217,8 +251,17 @@ function ProfilePostCard({
                             <View style={styles.marketHeaderRow}>
                                 <Image source={{ uri: FALLBACK_MARKET_IMAGE }} style={styles.marketImage} contentFit="cover" />
                                 <Text style={styles.marketQuestion} numberOfLines={2}>{questionText}</Text>
-                                <MiniGauge percent={marketPercent} />
+                                <MiniGauge percent={displayMarketPercent} />
                             </View>
+
+                            {isResolved ? (
+                                <View style={[styles.resolutionBanner, resolution.winningSide === "NO" ? styles.resolutionBannerNo : styles.resolutionBannerYes]}>
+                                    <Text style={styles.resolutionBannerText}>{resolution.resultLabel}</Text>
+                                    <Text style={styles.resolutionBannerSubText}>
+                                        {resolution.positionOutcomeLabel ? `Position ${resolution.positionOutcomeLabel.toLowerCase()}` : resolution.detailLabel}
+                                    </Text>
+                                </View>
+                            ) : null}
 
                             {isPosition ? (
                                 <View style={styles.positionStatsRow}>
@@ -247,8 +290,12 @@ function ProfilePostCard({
                                 </View>
                             </View>
 
-                            <TouchableOpacity style={styles.tradeButton} onPress={() => onTradePress(post)}>
-                                <Text style={styles.tradeButtonText}>Trade</Text>
+                            <TouchableOpacity
+                                style={[styles.tradeButton, isResolved && styles.tradeButtonResolved, isResolved && resolutionButtonStyle]}
+                                onPress={isResolved ? undefined : () => onTradePress(post)}
+                                disabled={isResolved}
+                            >
+                                <Text style={styles.tradeButtonText}>{isResolved ? resolution.actionLabel : "Trade"}</Text>
                             </TouchableOpacity>
                         </View>
 
@@ -304,9 +351,12 @@ export function ProfilePostsTab({ userId }: ProfilePostsTabProps) {
         setRefreshing(false);
     };
 
-    const handleTradePress = (post: FeedPost) => {
-        const id = post.market_id || post.market_slug;
-        if (!id) return;
+    const handleTradePress = async (post: FeedPost) => {
+        const id = await resolvePostMarketId(post);
+        if (!id) {
+            Alert.alert("Market unavailable", "Bu posttaki market artik acilamiyor.");
+            return;
+        }
 
         router.push({
             pathname: "/market/[id]",
@@ -446,6 +496,17 @@ const styles = StyleSheet.create({
         fontWeight: "700",
         letterSpacing: -0.6,
     },
+    resolutionOutcomeText: {
+        fontSize: 24,
+        fontWeight: "700",
+        letterSpacing: -0.5,
+    },
+    resolutionOutcomeWon: {
+        color: "#10b981",
+    },
+    resolutionOutcomeLost: {
+        color: "#ef4444",
+    },
     contentRow: {
         flexDirection: "row",
         gap: 6,
@@ -483,6 +544,31 @@ const styles = StyleSheet.create({
         borderRadius: 12,
         padding: 8,
         gap: 12,
+    },
+    resolutionBanner: {
+        borderRadius: 12,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        marginTop: -2,
+    },
+    resolutionBannerYes: {
+        backgroundColor: "rgba(16, 185, 129, 0.12)",
+    },
+    resolutionBannerNo: {
+        backgroundColor: "rgba(239, 68, 68, 0.12)",
+    },
+    resolutionBannerText: {
+        color: "#171717",
+        fontSize: 13,
+        fontWeight: "800",
+        textTransform: "uppercase",
+        letterSpacing: 0.2,
+    },
+    resolutionBannerSubText: {
+        color: "rgba(23,23,23,0.72)",
+        fontSize: 12,
+        fontWeight: "600",
+        marginTop: 2,
     },
     marketHeaderRow: {
         flexDirection: "row",
@@ -603,6 +689,15 @@ const styles = StyleSheet.create({
         borderColor: "rgba(255,255,255,0.25)",
         alignItems: "center",
         justifyContent: "center",
+    },
+    tradeButtonResolved: {
+        borderColor: "transparent",
+    },
+    tradeButtonResolvedYes: {
+        backgroundColor: "#10b981",
+    },
+    tradeButtonResolvedNo: {
+        backgroundColor: "#ef4444",
     },
     tradeButtonText: {
         color: "#fff",

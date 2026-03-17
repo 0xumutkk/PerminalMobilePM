@@ -50,8 +50,15 @@ async function parseErrorResponse(res: Response): Promise<string> {
 
     try {
         const parsed = JSON.parse(text) as { error?: string; message?: string };
-        return parsed.error || parsed.message || text;
+        const message = parsed.error || parsed.message || text;
+        if (/no routes found/i.test(message)) {
+            return "No swap route is available for this amount right now.";
+        }
+        return message;
     } catch {
+        if (/no routes found/i.test(text)) {
+            return "No swap route is available for this amount right now.";
+        }
         return text;
     }
 }

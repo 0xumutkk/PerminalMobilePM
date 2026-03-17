@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
     ActivityIndicator,
+    Alert,
     Keyboard,
     Platform,
     Pressable,
@@ -23,6 +24,7 @@ import { supabase } from "../../../lib/supabase";
 import type { Market, MarketGroup } from "../../../lib/mock-data";
 import { MarketCardNative } from "../../../components/MarketCardNative";
 import { useAuth } from "../../../hooks/useAuth";
+import { resolvePostMarketId } from "../../../lib/postMarkets";
 import { BottomProgressiveBlur } from "../../../components/ui/BottomProgressiveBlur";
 
 const SUPPORTS_GLASS = Platform.OS === "ios" && isLiquidGlassAvailable();
@@ -266,15 +268,17 @@ export default function SearchScreen() {
     );
 
     const handleOpenPostTarget = useCallback(
-        (post: PostSearchResult) => {
-            const marketId = post.market_id || post.market_slug;
+        async (post: PostSearchResult) => {
+            const marketId = await resolvePostMarketId(post);
             if (marketId) {
                 handleOpenMarket(marketId);
                 return;
             }
             if (post.author?.id) {
                 handleOpenProfile(post.author.id);
+                return;
             }
+            Alert.alert("Post unavailable", "Bu post icin acilabilir bir market bulunamadi.");
         },
         [handleOpenMarket, handleOpenProfile]
     );

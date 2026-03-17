@@ -4,7 +4,6 @@ import { useRouter, useNavigation } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Feed } from "../../../components/social/Feed";
 import { CreatePost } from "../../../components/social/CreatePost";
-import { migrateFigmaPosts } from "../../../lib/migrate";
 import { Image } from "expo-image";
 import { Plus, Grid } from "lucide-react-native";
 import { BottomProgressiveBlur } from "../../../components/ui/BottomProgressiveBlur";
@@ -47,11 +46,6 @@ export default function ExploreScreen() {
       unsubscribeTabPress();
     };
   }, [navigation]);
-
-  React.useEffect(() => {
-    // Temporary migration trigger
-    migrateFigmaPosts().then(res => console.log("Migration result:", res));
-  }, []);
 
   const ListHeaderComponent = () => (
     <>

@@ -12,9 +12,9 @@ import Animated, {
 import { GestureDetector, Gesture } from "react-native-gesture-handler";
 import { useFundSolanaWallet } from "@privy-io/expo/ui";
 import { useTrade, TradeSide, TradeMode } from "../../hooks/useTrade";
-import { usePositions } from "../../hooks/usePositions";
+import { applyOptimisticTrade, usePositions } from "../../hooks/usePositions";
 import { Market } from "../../lib/mock-data";
-import { JUP_USD_MINT_ADDRESS } from "../../lib/solana";
+import { JUP_USD_MINT_ADDRESS, USDC_MINT_ADDRESS } from "../../lib/solana";
 import { SwipeToBuy } from "./SwipeToBuy";
 
 interface TradePanelProps {
@@ -101,7 +101,7 @@ export function TradePanel({
         solBalance,
         walletAddress,
     } = useTrade();
-    const { activePositions } = usePositions();
+    const { activePositions, isLoading: positionsLoading, refresh: refreshPositions } = usePositions();
     const { fundWallet } = useFundSolanaWallet();
 
     const [side, setSide] = useState<TradeSide>(initialSide);
@@ -119,17 +119,44 @@ export function TradePanel({
     const numericAmount = parseFloat(amount) || 0;
     const resolvedUsdcBalance = usdcTokenBalance ?? 0;
     const resolvedJupUsdBalance = jupUsdBalance ?? 0;
-    const totalStableBalance = (usdcBalance ?? 0);
+    const totalStableBalance = usdcBalance ?? (resolvedUsdcBalance + resolvedJupUsdBalance);
+    const canFundWithJupUsd = resolvedJupUsdBalance + 0.000001 >= numericAmount;
+    const canFundWithUsdc = resolvedUsdcBalance + 0.000001 >= numericAmount;
     const needsJupUsdTopUp = tradeMode === "BUY"
         && numericAmount > 0
-        && resolvedJupUsdBalance + 0.000001 < numericAmount
+        && !canFundWithJupUsd
+        && !canFundWithUsdc
         && totalStableBalance + 0.000001 >= numericAmount
         && resolvedUsdcBalance > 0;
-    const preferredBuySource = {
-        label: needsJupUsdTopUp ? "Stable" : "JupUSD",
-        available: needsJupUsdTopUp ? totalStableBalance : resolvedJupUsdBalance,
-        depositMint: JUP_USD_MINT_ADDRESS,
-    };
+    const preferredBuySource = canFundWithJupUsd
+        ? {
+            label: "JupUSD",
+            available: resolvedJupUsdBalance,
+            depositMint: JUP_USD_MINT_ADDRESS,
+        }
+        : canFundWithUsdc
+            ? {
+                label: "USDC",
+                available: resolvedUsdcBalance,
+                depositMint: USDC_MINT_ADDRESS,
+            }
+            : needsJupUsdTopUp
+                ? {
+                    label: "Stable",
+                    available: totalStableBalance,
+                    depositMint: JUP_USD_MINT_ADDRESS,
+                }
+                : resolvedUsdcBalance >= resolvedJupUsdBalance
+                    ? {
+                        label: "USDC",
+                        available: resolvedUsdcBalance,
+                        depositMint: USDC_MINT_ADDRESS,
+                    }
+                    : {
+                        label: "JupUSD",
+                        available: resolvedJupUsdBalance,
+                        depositMint: JUP_USD_MINT_ADDRESS,
+                    };
 
     useEffect(() => {
         setSide(initialSide);
@@ -348,6 +375,26 @@ export function TradePanel({
             const quoteContracts = parseInt(orderObj.contracts ?? "0", 10);
             const quoteTotalCost = parseInt(orderObj.orderCostUsd ?? "0", 10) / 1_000_000;
             const quotePrice = quoteContracts > 0 ? quoteTotalCost / quoteContracts : 0;
+            const filledContracts = Math.max(0, quoteContracts);
+            const optimisticPositionPubkey = tradeMode === "BUY"
+                ? orderObj.positionPubkey
+                : selectedPosition?.mint;
+
+            if (walletAddress && optimisticPositionPubkey && filledContracts > 0) {
+                applyOptimisticTrade({
+                    ownerPubkey: walletAddress,
+                    mode: tradeMode,
+                    marketId,
+                    marketTitle: market.eventTitle || market.title,
+                    side,
+                    contracts: filledContracts,
+                    price: quotePrice > 0 ? quotePrice : expectedPrice,
+                    positionPubkey: optimisticPositionPubkey,
+                    imageUrl: market.imageUrl,
+                    basePosition: tradeMode === "SELL" ? selectedPosition : null,
+                });
+                await refreshPositions();
+            }
 
             if (onSuccess) {
                 await onSuccess({
@@ -374,6 +421,7 @@ export function TradePanel({
 
     const isMarketTradeable = !!marketId && market.isTradeable !== false;
     const hasSellInventory = matchingPositions.length > 0;
+    const isSellInventoryLoading = tradeMode === "SELL" && positionsLoading && matchingPositions.length === 0;
     const needsPositionSelection = tradeMode === "SELL" && matchingPositions.length > 1 && !selectedPosition;
     const expectedPositionPubkey = tradeMode === "SELL" ? (selectedPosition?.mint ?? null) : null;
     const expectedDepositMint = tradeMode === "BUY" ? preferredBuySource.depositMint : null;
@@ -414,6 +462,8 @@ export function TradePanel({
         ? "Order submitted and still pending fill. You can close this sheet and check back."
         : !isMarketTradeable
             ? "This market is not tradeable right now."
+            : isSellInventoryLoading
+                ? "Loading your position..."
             : tradeMode === "SELL" && !hasSellInventory
                 ? `No ${side} shares available to sell.`
                 : needsPositionSelection
@@ -433,12 +483,13 @@ export function TradePanel({
             ? `Need $${requiredBuyBalance.toLocaleString(undefined, {
                 minimumFractionDigits: 2,
                 maximumFractionDigits: 2,
-            })} in JupUSD buying power. SOL only covers network/account fees.`
+            })} in ${preferredBuySource.label} buying power. SOL only covers network/account fees.`
         : tradeMode === "SELL" && isInsufficientBalance
             ? "Selected position does not have enough shares for this sell."
             : null;
     const isButtonDisabled =
         interactionLocked ||
+        isSellInventoryLoading ||
         isQuoting ||
         !amount ||
         !!tradeBlockedReason ||
@@ -479,6 +530,8 @@ export function TradePanel({
         ? "Order pending"
         : isQuoting
             ? "Fetching quote..."
+            : isSellInventoryLoading
+                ? "Loading position..."
             : tradeMode === "SELL" && !hasSellInventory
                 ? "No shares to sell"
                 : needsPositionSelection
@@ -499,12 +552,16 @@ export function TradePanel({
         : null;
     const feedbackMessage = tradeBlockedReason || insufficientBalanceMessage || balanceErrorMessage || topUpMessage || (isQuoting ? "Fetching latest quote..." : null);
     const balanceLabel = tradeMode === "BUY"
-        ? needsJupUsdTopUp ? "Stable Balance" : "JupUSD Balance"
+        ? preferredBuySource.label === "Stable" ? "Stable Balance" : `${preferredBuySource.label} Balance`
+        : isSellInventoryLoading
+            ? "Position Balance"
         : matchingPositions.length > 1 && !selectedPosition
             ? "Position Balance"
             : "Selected Position";
     const balanceValue = tradeMode === "BUY"
         ? `$${preferredBuySource.available.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+        : isSellInventoryLoading
+            ? "Loading position..."
         : matchingPositions.length > 1 && !selectedPosition
             ? "Select a position"
             : `${formatWholeShares(availableBalance)} shares`;

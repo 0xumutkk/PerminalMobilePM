@@ -52,13 +52,42 @@ function calculateRangePnlUsd(series: ChartPoint[]): number | null {
 }
 
 function buildFlatSeries(range: Exclude<PortfolioPerformanceRange, "ALL">, value: number): ChartPoint[] {
-    const endTimestamp = Date.now();
-    const startTimestamp = endTimestamp - RANGE_TO_WINDOW_MS[range];
+    const { startTimestamp, endTimestamp } = getRangeWindow(range);
 
     return [
         { timestamp: startTimestamp, value },
         { timestamp: endTimestamp, value },
     ];
+}
+
+function getRangeWindow(range: Exclude<PortfolioPerformanceRange, "ALL">): { startTimestamp: number; endTimestamp: number } {
+    const endTimestamp = Date.now();
+    return {
+        startTimestamp: endTimestamp - RANGE_TO_WINDOW_MS[range],
+        endTimestamp,
+    };
+}
+
+function extendSeriesToRange(
+    series: ChartPoint[],
+    range: Exclude<PortfolioPerformanceRange, "ALL">
+): ChartPoint[] {
+    if (series.length === 0) return series;
+
+    const { startTimestamp, endTimestamp } = getRangeWindow(range);
+    const nextSeries = [...series];
+    const firstPoint = nextSeries[0];
+    const lastPoint = nextSeries[nextSeries.length - 1];
+
+    if (firstPoint.timestamp > startTimestamp) {
+        nextSeries.unshift({ timestamp: startTimestamp, value: firstPoint.value });
+    }
+
+    if (lastPoint.timestamp < endTimestamp) {
+        nextSeries.push({ timestamp: endTimestamp, value: lastPoint.value });
+    }
+
+    return nextSeries;
 }
 
 function getLatestHistoryValue(
@@ -163,6 +192,8 @@ export function useJupiterPortfolioPerformance(walletAddress: string | null) {
                 if (fallbackValue != null) {
                     normalizedSeries = buildFlatSeries(nextRange, fallbackValue);
                 }
+            } else if (normalizedSeries.length > 0 && nextRange !== "ALL") {
+                normalizedSeries = extendSeriesToRange(normalizedSeries, nextRange);
             }
 
             setProfile(profileResult);

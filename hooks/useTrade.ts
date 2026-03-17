@@ -666,7 +666,7 @@ export function useTrade() {
                     signature: null,
                 }));
             } catch (error) {
-                console.error("[Trade] JupUSD top-up swap error:", error);
+                console.warn("[Trade] JupUSD top-up swap error:", error);
                 const message = error instanceof Error ? error.message : "Failed to prepare JupUSD for trade.";
                 setState((s) => ({
                     ...s,
