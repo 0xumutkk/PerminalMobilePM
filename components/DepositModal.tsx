@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from "react";
-import { View, Text, StyleSheet, TouchableOpacity, Modal, Platform, Animated, Dimensions } from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity, Modal, Platform, Animated, Dimensions, PanResponder } from "react-native";
 import { GlassView, isLiquidGlassAvailable } from "expo-glass-effect";
 import { X, CreditCard, ChevronRight, Scan, Smartphone, Globe } from "lucide-react-native";
 
@@ -10,6 +10,8 @@ interface DepositModalProps {
 }
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
+const DISMISS_DRAG_DISTANCE = 120;
+const DISMISS_DRAG_VELOCITY = 0.9;
 
 export function DepositModal({ visible, onClose, onSelectMethod }: DepositModalProps) {
     const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -53,6 +55,39 @@ export function DepositModal({ visible, onClose, onSelectMethod }: DepositModalP
         });
     };
 
+    const panResponder = useRef(
+        PanResponder.create({
+            onMoveShouldSetPanResponder: (_, gestureState) => (
+                gestureState.dy > 8 && Math.abs(gestureState.dy) > Math.abs(gestureState.dx)
+            ),
+            onPanResponderMove: (_, gestureState) => {
+                if (gestureState.dy <= 0) return;
+                slideAnim.setValue(gestureState.dy);
+            },
+            onPanResponderRelease: (_, gestureState) => {
+                if (gestureState.dy > DISMISS_DRAG_DISTANCE || gestureState.vy > DISMISS_DRAG_VELOCITY) {
+                    handleClose();
+                    return;
+                }
+
+                Animated.spring(slideAnim, {
+                    toValue: 0,
+                    tension: 50,
+                    friction: 8,
+                    useNativeDriver: true,
+                }).start();
+            },
+            onPanResponderTerminate: () => {
+                Animated.spring(slideAnim, {
+                    toValue: 0,
+                    tension: 50,
+                    friction: 8,
+                    useNativeDriver: true,
+                }).start();
+            },
+        })
+    ).current;
+
     return (
         <Modal
             visible={visible}
@@ -80,7 +115,9 @@ export function DepositModal({ visible, onClose, onSelectMethod }: DepositModalP
                         { transform: [{ translateY: slideAnim }] }
                     ]}
                 >
-                    <View style={styles.handle} />
+                    <View style={styles.dragHandleArea} {...panResponder.panHandlers}>
+                        <View style={styles.handle} />
+                    </View>
 
                     <View style={styles.header}>
                         <Text style={styles.title}>Deposit</Text>
@@ -178,7 +215,13 @@ const styles = StyleSheet.create({
         backgroundColor: "#E5E5E5",
         borderRadius: 2,
         alignSelf: "center",
-        marginBottom: 8,
+    },
+    dragHandleArea: {
+        width: "100%",
+        alignItems: "center",
+        justifyContent: "center",
+        paddingTop: 4,
+        paddingBottom: 8,
     },
     header: {
         alignItems: "center",

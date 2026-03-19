@@ -12,13 +12,17 @@ import {
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
 import Svg, { Circle } from "react-native-svg";
-import { ArrowDown, ArrowUp, Repeat2, Share2 } from "lucide-react-native";
+import { ArrowDown, ArrowUp, Ellipsis, Repeat2, Share2, Trash2 } from "lucide-react-native";
 import type { Market } from "../../lib/mock-data";
 import { FeedPost, useFeed } from "../../hooks/useFeed";
+import { useAuth } from "../../hooks/useAuth";
 import { useInteractions } from "../../hooks/useInteractions";
+import { deriveCurrentUserId } from "../../lib/currentUserId";
 import { getMarketResolution, getTradeMetadataSide } from "../../lib/marketResolution";
 import { resolvePostMarket, resolvePostMarketId } from "../../lib/postMarkets";
 import { formatTimeAgo } from "../../lib/utils";
+import { PremiumSpinner } from "../ui/PremiumSpinner";
+import { PostCard } from "../social/PostCard";
 
 interface ProfilePostsTabProps {
     userId?: string;
@@ -109,17 +113,23 @@ function MiniGauge({ percent }: { percent: number }) {
 function ProfilePostCard({
     post,
     onTradePress,
+    onPostDeleted,
 }: {
     post: FeedPost;
     onTradePress: (post: FeedPost) => void;
+    onPostDeleted: () => void | Promise<void>;
 }) {
-    const { toggleLike, toggleRepost } = useInteractions();
+    const { user, activeWallet } = useAuth();
+    const currentUserId = deriveCurrentUserId(user, activeWallet);
+    const { toggleLike, toggleRepost, deletePost, isSubmitting } = useInteractions();
 
     const [liked, setLiked] = useState(post.user_has_liked);
     const [upvotes, setUpvotes] = useState(post.likes_count || 0);
     const [reposted, setReposted] = useState(post.user_has_reposted);
     const [repostCount, setRepostCount] = useState(post.reposts_count || 0);
     const [marketState, setMarketState] = useState<Market | null>(null);
+    const [showOwnerActions, setShowOwnerActions] = useState(false);
+    const isOwnPost = currentUserId != null && post.user_id === currentUserId;
 
     const tradeMetadata = useMemo(() => {
         if (post.trade_metadata && typeof post.trade_metadata === "object" && !Array.isArray(post.trade_metadata)) {
@@ -134,14 +144,17 @@ function ProfilePostCard({
 
     const badgeLabel = isPosition ? "Position" : isThesis ? "Thesis" : "Post";
     const marketPercent = normalizePercent(readNumber(tradeMetadata.market_percent, readNumber(tradeMetadata.yes_probability, 51)), 51);
-    const pnlPercent = readNumber(tradeMetadata.pnl_percent, 1234.2);
+    const pnlPercent = readNumber(
+        tradeMetadata.pnl_percent,
+        readNumber(tradeMetadata.unrealized_pnl_percent, 1234.2)
+    );
 
     const sideRaw = readString(tradeMetadata.side, "YES").toUpperCase();
     const sideLabel = sideRaw === "NO" ? "No" : "Yes";
     const isSideYes = sideLabel === "Yes";
 
     const shares = readNumber(tradeMetadata.shares_count, 12300);
-    const totalValue = readNumber(tradeMetadata.total_value, 12234.56);
+    const totalValue = readNumber(tradeMetadata.total_value, readNumber(tradeMetadata.current_value, 12234.56));
     const avgEntry = readNumber(tradeMetadata.avg_entry, 0.47);
     const currentPrice = readNumber(tradeMetadata.current_price, 0.97);
     const downVotes = Math.max(0, readNumber(tradeMetadata.down_votes, 2300));
@@ -211,6 +224,25 @@ function ProfilePostCard({
         }
     };
 
+    const handleDeletePress = () => {
+        setShowOwnerActions(false);
+        Alert.alert("Delete post", "This post will be removed from your profile and the feed.", [
+            { text: "Cancel", style: "cancel" },
+            {
+                text: "Delete",
+                style: "destructive",
+                onPress: async () => {
+                    const success = await deletePost(post.id);
+                    if (!success) {
+                        Alert.alert("Delete failed", "Post could not be deleted right now.");
+                        return;
+                    }
+                    await onPostDeleted();
+                },
+            },
+        ]);
+    };
+
     return (
         <View style={styles.postContainer}>
             <View style={styles.postTopRow}>
@@ -236,6 +268,25 @@ function ProfilePostCard({
                             <Text style={[styles.resolutionOutcomeText, resolutionOutcomeStyle]}>{resolution.positionOutcomeLabel}</Text>
                         ) : isPosition ? (
                             <Text style={styles.pnlPercent}>{formatPercent(pnlPercent)}</Text>
+                        ) : null}
+                        {isOwnPost ? (
+                            <View style={styles.ownerActionWrap}>
+                                <TouchableOpacity
+                                    style={styles.ownerActionButton}
+                                    onPress={() => setShowOwnerActions((prev) => !prev)}
+                                    disabled={isSubmitting}
+                                >
+                                    <Ellipsis size={16} color="#6b7280" />
+                                </TouchableOpacity>
+                                {showOwnerActions ? (
+                                    <View style={styles.ownerMenu}>
+                                        <TouchableOpacity style={styles.ownerMenuItem} onPress={handleDeletePress}>
+                                            <Trash2 size={14} color="#dc2626" />
+                                            <Text style={styles.ownerMenuText}>Delete post</Text>
+                                        </TouchableOpacity>
+                                    </View>
+                                ) : null}
+                            </View>
                         ) : null}
                     </View>
 
@@ -338,7 +389,9 @@ function ProfilePostCard({
 
 export function ProfilePostsTab({ userId }: ProfilePostsTabProps) {
     const router = useRouter();
-    const { posts, isLoading, error, fetchFeed } = useFeed(userId);
+    const { user, activeWallet } = useAuth();
+    const viewerId = deriveCurrentUserId(user, activeWallet);
+    const { posts, isLoading, error, fetchFeed } = useFeed({ viewerId, userId });
     const [refreshing, setRefreshing] = useState(false);
 
     useEffect(() => {
@@ -351,16 +404,10 @@ export function ProfilePostsTab({ userId }: ProfilePostsTabProps) {
         setRefreshing(false);
     };
 
-    const handleTradePress = async (post: FeedPost) => {
-        const id = await resolvePostMarketId(post);
-        if (!id) {
-            Alert.alert("Market unavailable", "Bu posttaki market artik acilamiyor.");
-            return;
-        }
-
+    const handleTradePress = async (id: string) => {
         router.push({
             pathname: "/market/[id]",
-            params: { id },
+            params: { id, single: "true" },
         });
     };
 
@@ -369,10 +416,7 @@ export function ProfilePostsTab({ userId }: ProfilePostsTabProps) {
             data={posts}
             keyExtractor={(item) => item.id}
             renderItem={({ item }) => (
-                <ProfilePostCard
-                    post={item}
-                    onTradePress={handleTradePress}
-                />
+                <PostCard post={item} onTradePress={handleTradePress} onPostDeleted={fetchFeed} />
             )}
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#34c759" />}
             contentContainerStyle={styles.listContent}
@@ -380,7 +424,7 @@ export function ProfilePostsTab({ userId }: ProfilePostsTabProps) {
             ListEmptyComponent={
                 isLoading ? (
                     <View style={styles.centerState}>
-                        <ActivityIndicator size="large" color="#34c759" />
+                        <PremiumSpinner size={30} />
                     </View>
                 ) : (
                     <View style={styles.centerState}>
@@ -495,6 +539,47 @@ const styles = StyleSheet.create({
         fontSize: 28,
         fontWeight: "700",
         letterSpacing: -0.6,
+    },
+    ownerActionWrap: {
+        position: "relative",
+        alignItems: "flex-end",
+        marginLeft: 6,
+    },
+    ownerActionButton: {
+        width: 28,
+        height: 28,
+        borderRadius: 14,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(0,0,0,0.04)",
+    },
+    ownerMenu: {
+        position: "absolute",
+        top: 32,
+        right: 0,
+        minWidth: 132,
+        borderRadius: 14,
+        backgroundColor: "#ffffff",
+        borderWidth: 1,
+        borderColor: "rgba(0,0,0,0.08)",
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.08,
+        shadowRadius: 18,
+        elevation: 8,
+        zIndex: 20,
+    },
+    ownerMenuItem: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+    },
+    ownerMenuText: {
+        color: "#dc2626",
+        fontSize: 13,
+        fontWeight: "700",
     },
     resolutionOutcomeText: {
         fontSize: 24,

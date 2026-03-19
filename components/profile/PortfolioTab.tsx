@@ -12,9 +12,12 @@ import { useRouter } from "expo-router";
 import { ChevronDown, Wallet, CircleDollarSign } from "lucide-react-native";
 import { MarketChartNative } from "../MarketChartNative";
 import { usePositions } from "../../hooks/usePositions";
+import type { Position } from "../../hooks/usePositions";
 import type { PortfolioPerformanceRange } from "../../hooks/useJupiterPortfolioPerformance";
 import type { ChartPoint } from "../../lib/mock-data";
+import { SharePositionSheet } from "../social/SharePositionSheet";
 import PositionCard from "./PositionCard";
+import { PremiumSpinner } from "../ui/PremiumSpinner";
 
 interface PortfolioTabProps {
     balanceSeries: ChartPoint[];
@@ -39,6 +42,7 @@ export default function PortfolioTab({
     const { activePositions, closedPositions, isLoading, refresh: refreshPositions } = usePositions();
     const [activeExpanded, setActiveExpanded] = useState(false);
     const [closedExpanded, setClosedExpanded] = useState(false);
+    const [positionToShare, setPositionToShare] = useState<Position | null>(null);
 
     const onPullToRefresh = async () => {
         await Promise.all([
@@ -130,7 +134,7 @@ export default function PortfolioTab({
                     />
                     {isPerformanceLoading ? (
                         <View style={styles.chartLoadingOverlay} pointerEvents="none">
-                            <ActivityIndicator color={chartColor} />
+                            <PremiumSpinner size={20} />
                         </View>
                     ) : null}
                 </View>
@@ -174,13 +178,16 @@ export default function PortfolioTab({
                     <>
                         <View style={styles.positionsList}>
                             {isLoading ? (
-                                <ActivityIndicator color="#34c759" style={{ margin: 20 }} />
+                                <View style={styles.positionsLoader}>
+                                    <PremiumSpinner size={24} />
+                                </View>
                             ) : sortedActivePositions.length > 0 ? (
                                 sortedActivePositions.map((position, index) => (
                                     <View key={`${position.mint}-${index}`}>
                                         <PositionCard
                                             position={position}
                                             onPress={() => handleOpenMarket(position.marketId)}
+                                            onSharePress={() => setPositionToShare(position)}
                                         />
                                         {index < sortedActivePositions.length - 1 ? <View style={styles.rowDivider} /> : null}
                                     </View>
@@ -207,13 +214,16 @@ export default function PortfolioTab({
                 {closedExpanded ? (
                     <View style={styles.positionsList}>
                         {isLoading ? (
-                            <ActivityIndicator color="#34c759" style={{ margin: 20 }} />
+                            <View style={styles.positionsLoader}>
+                                <PremiumSpinner size={24} />
+                            </View>
                         ) : sortedClosedPositions.length > 0 ? (
                             sortedClosedPositions.map((position, index) => (
                                 <View key={`${position.mint}-closed-${index}`}>
                                     <PositionCard
                                         position={position}
                                         onPress={() => handleOpenMarket(position.marketId)}
+                                        onSharePress={() => setPositionToShare(position)}
                                     />
                                     {index < sortedClosedPositions.length - 1 ? <View style={styles.rowDivider} /> : null}
                                 </View>
@@ -226,6 +236,14 @@ export default function PortfolioTab({
             </View>
 
             <View style={{ height: 100 }} />
+            <SharePositionSheet
+                visible={!!positionToShare}
+                position={positionToShare}
+                onClose={() => setPositionToShare(null)}
+                onShared={() => {
+                    void refreshPositions();
+                }}
+            />
         </ScrollView>
     );
 }
@@ -363,6 +381,11 @@ const styles = StyleSheet.create({
     },
     positionsList: {
         marginTop: 8,
+    },
+    positionsLoader: {
+        paddingVertical: 20,
+        alignItems: "center",
+        justifyContent: "center",
     },
     rowDivider: {
         height: 1,

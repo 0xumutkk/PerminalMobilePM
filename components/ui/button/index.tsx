@@ -8,8 +8,9 @@ import {
   type VariantProps,
 } from '@gluestack-ui/utils/nativewind-utils';
 import { cssInterop } from 'nativewind';
-import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 import { PrimitiveIcon, UIIcon } from '@gluestack-ui/core/icon/creator';
+import { PremiumSpinner } from '../PremiumSpinner';
 
 const SCOPE = 'BUTTON';
 
@@ -19,7 +20,7 @@ const UIButton = createButton({
   Root: Root,
   Text,
   Group: View,
-  Spinner: ActivityIndicator,
+  Spinner: PremiumSpinner,
   Icon: UIIcon,
 });
 

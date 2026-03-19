@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, Pressable } from "react-native";
 import { Image } from "expo-image";
 import { type Market, type MarketGroup } from "../lib/mock-data";
 import { useRouter } from "expo-router";
-import { TrendingUp, TrendingDown, Activity, ArrowUpCircle } from "lucide-react-native";
+import { TrendingUp, TrendingDown, Activity } from "lucide-react-native";
 import { Svg, Line, Path, Defs, LinearGradient, Stop } from "react-native-svg";
 
 export interface MarketCardNativeProps {
@@ -210,7 +210,6 @@ export const MarketCardNative = memo(function MarketCardNative({ group, onBuyYes
                             <View key={m.id} style={styles.choiceRow}>
                                 <View style={styles.choiceLeft}>
                                     <Text style={styles.choiceLabel} numberOfLines={1}>{cleanLabel}</Text>
-                                    <ArrowUpCircle size={14} color="rgba(0,0,0,0.2)" />
                                 </View>
                                 <View style={styles.choiceRight}>
                                     <Text style={styles.choicePrice}>{Math.round(m.yesPrice * 100)}%</Text>
