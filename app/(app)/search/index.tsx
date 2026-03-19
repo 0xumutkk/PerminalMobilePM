@@ -16,9 +16,13 @@ import { StatusBar } from "expo-status-bar";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-import { ArrowLeft, FileText, Search as SearchIcon, TrendingUp, Users, X } from "lucide-react-native";
+import { ArrowLeft, FileText, Search as SearchIcon, TrendingUp, Users, X, History } from "lucide-react-native";
 import { GlassView, isLiquidGlassAvailable } from "expo-glass-effect";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import { runOnJS } from "react-native-reanimated";
 import { Buffer } from "buffer";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Haptics from "expo-haptics";
 import { fetchJupiterSearch } from "../../../lib/jupiter";
 import { supabase } from "../../../lib/supabase";
 import type { Market, MarketGroup } from "../../../lib/mock-data";
@@ -26,10 +30,18 @@ import { MarketCardNative } from "../../../components/MarketCardNative";
 import { useAuth } from "../../../hooks/useAuth";
 import { resolvePostMarketId } from "../../../lib/postMarkets";
 import { BottomProgressiveBlur } from "../../../components/ui/BottomProgressiveBlur";
+import { PremiumSpinner } from "../../../components/ui/PremiumSpinner";
 
 const SUPPORTS_GLASS = Platform.OS === "ios" && isLiquidGlassAvailable();
 const MIN_QUERY_LENGTH = 2;
 const TRENDING_SUGGESTIONS = ["Bitcoin", "Solana", "Fed Rates", "Trump", "NBA", "Ethereum"];
+const SEARCH_HISTORY_KEY = "perminal_search_history";
+const MAX_HISTORY_ITEMS = 10;
+const PEOPLE_PAGE_SIZE = 12;
+const POSTS_PAGE_SIZE = 10;
+const EDGE_SWIPE_WIDTH = 20;
+const EDGE_SWIPE_TRIGGER_DISTANCE = 72;
+const EDGE_SWIPE_TRIGGER_VELOCITY = 700;
 
 type SearchTab = "all" | "people" | "markets" | "posts";
 
@@ -73,7 +85,7 @@ interface SearchSection {
 }
 
 function sanitizeSearchQuery(raw: string): string {
-    return raw.replace(/[,%]/g, " ").trim();
+    return raw.replace(/[,%]/g, " ").replace(/\s+/g, " ").trim();
 }
 
 function formatFollowers(value?: number | null): string {
@@ -106,6 +118,19 @@ function formatRelativeTime(value: string): string {
     return `${Math.floor(diffMs / day)}d`;
 }
 
+function mergeUniqueById<T extends { id: string }>(current: T[], incoming: T[]): T[] {
+    if (incoming.length === 0) return current;
+
+    const seen = new Set(current.map((item) => item.id));
+    const next = [...current];
+    for (const item of incoming) {
+        if (seen.has(item.id)) continue;
+        seen.add(item.id);
+        next.push(item);
+    }
+    return next;
+}
+
 export default function SearchScreen() {
     const router = useRouter();
     const insets = useSafeAreaInsets();
@@ -118,7 +143,59 @@ export default function SearchScreen() {
     const [posts, setPosts] = useState<PostSearchResult[]>([]);
     const [loading, setLoading] = useState(false);
     const [refreshing, setRefreshing] = useState(false);
+    const [searchHistory, setSearchHistory] = useState<string[]>([]);
+    const [hasMorePeople, setHasMorePeople] = useState(true);
+    const [hasMorePosts, setHasMorePosts] = useState(true);
+    const [peoplePage, setPeoplePage] = useState(0);
+    const [postsPage, setPostsPage] = useState(0);
+    const [fetchingMore, setFetchingMore] = useState(false);
     const requestSequenceRef = useRef(0);
+    const paginationSequenceRef = useRef(0);
+
+    // Load history
+    useEffect(() => {
+        const loadHistory = async () => {
+            try {
+                const stored = await AsyncStorage.getItem(SEARCH_HISTORY_KEY);
+                if (stored) {
+                    setSearchHistory(JSON.parse(stored));
+                }
+            } catch (error) {
+                console.error("[Search] Failed to load history:", error);
+            }
+        };
+        loadHistory();
+    }, []);
+
+    const saveToHistory = useCallback(async (searchTerm: string) => {
+        const clean = searchTerm.trim();
+        if (!clean || clean.length < MIN_QUERY_LENGTH) return;
+
+        setSearchHistory((prev) => {
+            const next = [clean, ...prev.filter((item) => item !== clean)].slice(0, MAX_HISTORY_ITEMS);
+            AsyncStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(next)).catch(err => 
+                console.error("[Search] Failed to save history:", err)
+            );
+            return next;
+        });
+    }, []);
+
+    const removeFromHistory = useCallback(async (searchTerm: string) => {
+        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        setSearchHistory((prev) => {
+            const next = prev.filter((item) => item !== searchTerm);
+            AsyncStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(next)).catch(err => 
+                console.error("[Search] Failed to remove item:", err)
+            );
+            return next;
+        });
+    }, []);
+
+    const clearHistory = useCallback(async () => {
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        setSearchHistory([]);
+        await AsyncStorage.removeItem(SEARCH_HISTORY_KEY);
+    }, []);
 
     const currentUserId = useMemo(() => {
         if (user?.id) return user.id;
@@ -133,16 +210,28 @@ export default function SearchScreen() {
         return null;
     }, [user, activeWallet]);
 
-    const searchPeople = useCallback(async (term: string): Promise<ProfileSearchResult[]> => {
+    const resetPaginationState = useCallback((hasMore = false) => {
+        paginationSequenceRef.current += 1;
+        setPeoplePage(0);
+        setPostsPage(0);
+        setHasMorePeople(hasMore);
+        setHasMorePosts(hasMore);
+        setFetchingMore(false);
+    }, []);
+
+    const searchPeople = useCallback(async (term: string, page = 0): Promise<ProfileSearchResult[]> => {
         const clean = sanitizeSearchQuery(term);
         if (!clean) return [];
         const likeTerm = `%${clean}%`;
+        const from = page * PEOPLE_PAGE_SIZE;
+        const to = from + PEOPLE_PAGE_SIZE - 1;
+
         const { data, error } = await supabase
             .from("profiles")
             .select("id,username,display_name,avatar_url,bio,followers_count,pnl,win_rate")
             .or(`username.ilike.${likeTerm},display_name.ilike.${likeTerm}`)
             .order("followers_count", { ascending: false })
-            .limit(12);
+            .range(from, to);
 
         if (error) {
             console.error("[Search] Failed to search people:", error);
@@ -151,10 +240,13 @@ export default function SearchScreen() {
         return (data as ProfileSearchResult[] | null) ?? [];
     }, []);
 
-    const searchPosts = useCallback(async (term: string): Promise<PostSearchResult[]> => {
+    const searchPosts = useCallback(async (term: string, page = 0): Promise<PostSearchResult[]> => {
         const clean = sanitizeSearchQuery(term);
         if (!clean) return [];
         const likeTerm = `%${clean}%`;
+        const from = page * POSTS_PAGE_SIZE;
+        const to = from + POSTS_PAGE_SIZE - 1;
+
         const { data, error } = await supabase
             .from("posts")
             .select(`
@@ -168,7 +260,7 @@ export default function SearchScreen() {
             `)
             .or(`content.ilike.${likeTerm},market_question.ilike.${likeTerm}`)
             .order("created_at", { ascending: false })
-            .limit(10);
+            .range(from, to);
 
         if (error) {
             console.error("[Search] Failed to search posts:", error);
@@ -199,38 +291,49 @@ export default function SearchScreen() {
     const performSearch = useCallback(
         async (rawQuery: string) => {
             const requestId = ++requestSequenceRef.current;
-            const clean = rawQuery.trim();
+            const clean = sanitizeSearchQuery(rawQuery);
             if (clean.length < MIN_QUERY_LENGTH) {
                 setPeople([]);
                 setMarkets([]);
                 setPosts([]);
+                resetPaginationState();
                 setLoading(false);
                 return;
             }
 
             setLoading(true);
+            resetPaginationState(true);
             try {
-                const [peopleResult, marketResult, postsResult] = await Promise.all([
-                    searchPeople(clean),
+                const results = await Promise.allSettled([
+                    searchPeople(clean, 0),
                     fetchJupiterSearch(clean),
-                    searchPosts(clean),
+                    searchPosts(clean, 0),
                 ]);
+
                 if (requestId !== requestSequenceRef.current) return;
+
+                const peopleResult = results[0].status === "fulfilled" ? results[0].value : [];
+                const marketResult = results[1].status === "fulfilled" ? results[1].value : [];
+                const postsResult = results[2].status === "fulfilled" ? results[2].value : [];
                 setPeople(peopleResult);
                 setMarkets(marketResult.slice(0, 200));
                 setPosts(postsResult);
+                setHasMorePeople(peopleResult.length >= PEOPLE_PAGE_SIZE);
+                setHasMorePosts(postsResult.length >= POSTS_PAGE_SIZE);
+                saveToHistory(clean);
             } catch (error) {
                 if (requestId !== requestSequenceRef.current) return;
                 console.error("[Search] Failed global search:", error);
                 setPeople([]);
                 setMarkets([]);
                 setPosts([]);
+                resetPaginationState();
             } finally {
                 if (requestId !== requestSequenceRef.current) return;
                 setLoading(false);
             }
         },
-        [searchPeople, searchPosts]
+        [resetPaginationState, saveToHistory, searchPeople, searchPosts]
     );
 
     useEffect(() => {
@@ -240,12 +343,83 @@ export default function SearchScreen() {
         return () => clearTimeout(timer);
     }, [query, performSearch]);
 
+    const loadMore = useCallback(async () => {
+        if (loading || fetchingMore || query.trim().length < MIN_QUERY_LENGTH) return;
+
+        const term = query.trim();
+        const requestId = requestSequenceRef.current;
+        const shouldLoadPeople = activeTab === "people" && hasMorePeople;
+        const shouldLoadPosts = activeTab === "posts" && hasMorePosts;
+
+        if (!shouldLoadPeople && !shouldLoadPosts) return;
+
+        const paginationRequestId = ++paginationSequenceRef.current;
+        setFetchingMore(true);
+
+        try {
+            if (shouldLoadPeople) {
+                const nextPage = peoplePage + 1;
+                const morePeople = await searchPeople(term, nextPage);
+                if (
+                    requestId !== requestSequenceRef.current ||
+                    paginationRequestId !== paginationSequenceRef.current
+                ) {
+                    return;
+                }
+
+                setPeople((prev) => mergeUniqueById(prev, morePeople));
+                setPeoplePage(nextPage);
+                setHasMorePeople(morePeople.length >= PEOPLE_PAGE_SIZE);
+                return;
+            }
+
+            const nextPage = postsPage + 1;
+            const morePosts = await searchPosts(term, nextPage);
+            if (
+                requestId === requestSequenceRef.current &&
+                paginationRequestId === paginationSequenceRef.current
+            ) {
+                setPosts((prev) => mergeUniqueById(prev, morePosts));
+                setPostsPage(nextPage);
+                setHasMorePosts(morePosts.length >= POSTS_PAGE_SIZE);
+            }
+        } catch (error) {
+            console.error("[Search] Failed to load more results:", error);
+        } finally {
+            if (paginationRequestId === paginationSequenceRef.current) {
+                setFetchingMore(false);
+            }
+        }
+    }, [loading, fetchingMore, query, activeTab, hasMorePeople, peoplePage, searchPeople, hasMorePosts, postsPage, searchPosts]);
+
     const handleRefresh = useCallback(async () => {
         if (query.trim().length < MIN_QUERY_LENGTH) return;
         setRefreshing(true);
         await performSearch(query);
         setRefreshing(false);
     }, [performSearch, query]);
+
+    const handleBack = useCallback(() => {
+        router.back();
+    }, [router]);
+
+    const edgeSwipeGesture = useMemo(
+        () =>
+            Gesture.Pan()
+                .enabled(Platform.OS === "ios")
+                .activeOffsetX([12, 9999])
+                .failOffsetY([-12, 12])
+                .onEnd((event) => {
+                    const shouldGoBack =
+                        event.translationX >= EDGE_SWIPE_TRIGGER_DISTANCE ||
+                        event.velocityX >= EDGE_SWIPE_TRIGGER_VELOCITY;
+
+                    if (shouldGoBack) {
+                        runOnJS(handleBack)();
+                    }
+                }),
+        [handleBack]
+    );
 
     const handleOpenProfile = useCallback(
         (profileId: string) => {
@@ -254,7 +428,7 @@ export default function SearchScreen() {
                 router.push("/profile");
                 return;
             }
-            router.push({ pathname: "/profile/[id]", params: { id: profileId } });
+            router.push({ pathname: "/profile/[id]", params: { id: profileId, from: "search" } });
         },
         [currentUserId, router]
     );
@@ -337,7 +511,11 @@ export default function SearchScreen() {
     }, [activeTab, markets, people, posts]);
 
     const renderSectionHeader = useCallback(({ section }: { section: SearchSection }) => {
-        return <Text style={styles.sectionTitle}>{section.title}</Text>;
+        return (
+            <View style={styles.sectionHeader}>
+                <Text style={styles.sectionTitle}>{section.title}</Text>
+            </View>
+        );
     }, []);
 
     const renderPersonItem = useCallback(
@@ -413,15 +591,58 @@ export default function SearchScreen() {
         if (query.length === 0) {
             return (
                 <View style={styles.emptyContainer}>
-                    <TrendingUp size={48} color="#e5e7eb" strokeWidth={1.5} />
-                    <Text style={styles.emptyTitle}>Global Search</Text>
-                    <Text style={styles.emptySubtitle}>People, markets and posts</Text>
-                    <View style={styles.tagCloud}>
-                        {TRENDING_SUGGESTIONS.map((tag) => (
-                            <Pressable key={tag} style={styles.tagPill} onPress={() => setQuery(tag)}>
-                                <Text style={styles.tagText}>{tag}</Text>
-                            </Pressable>
-                        ))}
+                    {searchHistory.length > 0 && (
+                        <View style={styles.historySection}>
+                            <View style={styles.historyHeader}>
+                                <Text style={styles.historyTitle}>Recent Searches</Text>
+                                <Pressable onPress={clearHistory} style={styles.clearAllButton}>
+                                    <Text style={styles.clearAllText}>Clear All</Text>
+                                </Pressable>
+                            </View>
+                            <View style={styles.historyList}>
+                                {searchHistory.map((item) => (
+                                    <View key={item} style={styles.historyItemRow}>
+                                        <Pressable
+                                            style={styles.historyItem}
+                                            onPress={() => {
+                                                void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                                                setQuery(item);
+                                            }}
+                                        >
+                                            <History size={16} color="#6b7280" />
+                                            <Text style={styles.historyItemText}>{item}</Text>
+                                        </Pressable>
+                                        <Pressable
+                                            onPress={() => removeFromHistory(item)}
+                                            style={styles.historyDeleteButton}
+                                        >
+                                            <X size={14} color="#9ca3af" />
+                                        </Pressable>
+                                    </View>
+                                ))}
+                            </View>
+                        </View>
+                    )}
+
+                    <View style={styles.trendingSection}>
+                        <View style={styles.trendingHeader}>
+                            <TrendingUp size={18} color="#4b5563" />
+                            <Text style={styles.trendingTitle}>TRENDING TOPICS</Text>
+                        </View>
+                        <View style={styles.tagCloud}>
+                            {TRENDING_SUGGESTIONS.map((tag) => (
+                                <Pressable
+                                    key={tag}
+                                    style={styles.tagPill}
+                                    onPress={() => {
+                                        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                                        setQuery(tag);
+                                    }}
+                                >
+                                    <Text style={styles.tagText}>{tag}</Text>
+                                </Pressable>
+                            ))}
+                        </View>
                     </View>
                 </View>
             );
@@ -449,10 +670,15 @@ export default function SearchScreen() {
     return (
         <SafeAreaView style={styles.container} edges={["left", "right"]}>
             <StatusBar style="dark" />
+            {Platform.OS === "ios" ? (
+                <GestureDetector gesture={edgeSwipeGesture}>
+                    <View style={styles.edgeSwipeArea} />
+                </GestureDetector>
+            ) : null}
 
             <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
                 <View style={styles.searchBarContainer}>
-                    <Pressable onPress={() => router.back()} style={styles.backButton}>
+                    <Pressable onPress={handleBack} style={styles.backButton}>
                         <ArrowLeft size={22} color="#111827" />
                     </Pressable>
 
@@ -483,7 +709,13 @@ export default function SearchScreen() {
                             returnKeyType="search"
                         />
                         {query.length > 0 && (
-                            <Pressable onPress={() => setQuery("")} style={styles.clearButton}>
+                            <Pressable
+                                onPress={() => {
+                                    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                    setQuery("");
+                                }}
+                                style={styles.clearButton}
+                            >
                                 <X size={16} color="#9ca3af" />
                             </Pressable>
                         )}
@@ -500,7 +732,10 @@ export default function SearchScreen() {
                         <Pressable
                             key={tab.key}
                             style={[styles.filterPill, activeTab === tab.key && styles.filterPillActive]}
-                            onPress={() => setActiveTab(tab.key as SearchTab)}
+                            onPress={() => {
+                                void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                setActiveTab(tab.key as SearchTab);
+                            }}
                         >
                             <Text style={[styles.filterText, activeTab === tab.key && styles.filterTextActive]}>
                                 {tab.label}
@@ -518,11 +753,16 @@ export default function SearchScreen() {
                 renderSectionHeader={renderSectionHeader}
                 ListEmptyComponent={renderEmptyState}
                 ListHeaderComponent={
-                    loading ? <ActivityIndicator style={styles.loadingIndicator} color="#111827" /> : null
+                    loading ? <View style={styles.loadingIndicator}><PremiumSpinner size={20} /></View> : null
+                }
+                ListFooterComponent={
+                    fetchingMore ? <View style={styles.footerIndicator}><PremiumSpinner size={18} /></View> : null
                 }
                 stickySectionHeadersEnabled={false}
                 keyboardShouldPersistTaps="handled"
                 onScrollBeginDrag={Keyboard.dismiss}
+                onEndReached={loadMore}
+                onEndReachedThreshold={0.4}
                 refreshControl={
                     <RefreshControl
                         refreshing={refreshing}
@@ -549,6 +789,14 @@ const styles = StyleSheet.create({
         paddingBottom: 12,
         borderBottomWidth: 1,
         borderBottomColor: "#f3f4f6",
+    },
+    edgeSwipeArea: {
+        position: "absolute",
+        top: 0,
+        bottom: 0,
+        left: 0,
+        width: EDGE_SWIPE_WIDTH,
+        zIndex: 30,
     },
     searchBarContainer: {
         flexDirection: "row",
@@ -613,25 +861,31 @@ const styles = StyleSheet.create({
         color: "#fff",
     },
     listContent: {
-        padding: 16,
+        paddingHorizontal: 16,
         paddingBottom: 120,
-        gap: 12,
     },
     loadingIndicator: {
         marginTop: 8,
         marginBottom: 8,
     },
+    footerIndicator: {
+        marginVertical: 16,
+    },
+    sectionHeader: {
+        backgroundColor: "#fff",
+        paddingVertical: 8,
+    },
     sectionTitle: {
-        color: "#111827",
-        fontSize: 15,
-        fontWeight: "700",
-        marginBottom: 10,
-        marginTop: 2,
+        color: "#6b7280",
+        fontSize: 12,
+        fontWeight: "800",
+        textTransform: "uppercase",
+        letterSpacing: 0.5,
     },
     personCard: {
         borderRadius: 14,
         borderWidth: 1,
-        borderColor: "#f0f2f5",
+        borderColor: "#f3f4f6",
         backgroundColor: "#fff",
         paddingHorizontal: 12,
         paddingVertical: 10,
@@ -648,12 +902,12 @@ const styles = StyleSheet.create({
         width: 42,
         height: 42,
         borderRadius: 21,
-        backgroundColor: "#eef2ff",
+        backgroundColor: "#f3f4f6",
         alignItems: "center",
         justifyContent: "center",
     },
     personAvatarFallbackText: {
-        color: "#4338ca",
+        color: "#6b7280",
         fontSize: 14,
         fontWeight: "700",
     },
@@ -684,7 +938,7 @@ const styles = StyleSheet.create({
     postCard: {
         borderRadius: 14,
         borderWidth: 1,
-        borderColor: "#f0f2f5",
+        borderColor: "#f3f4f6",
         backgroundColor: "#fff",
         paddingHorizontal: 12,
         paddingVertical: 12,
@@ -716,41 +970,107 @@ const styles = StyleSheet.create({
         height: 8,
     },
     emptyContainer: {
-        alignItems: "center",
-        justifyContent: "center",
-        paddingTop: 84,
+        flex: 1,
+        paddingTop: 20,
     },
     emptyTitle: {
-        color: "#1f2937",
+        color: "#111827",
         fontSize: 18,
-        fontWeight: "600",
-        marginTop: 14,
+        fontWeight: "700",
+        marginTop: 20,
+        textAlign: "center",
     },
     emptySubtitle: {
         color: "#6b7280",
         fontSize: 14,
-        marginTop: 5,
+        marginTop: 8,
+        textAlign: "center",
+    },
+    historySection: {
+        width: "100%",
+        marginBottom: 32,
+    },
+    historyHeader: {
+        flexDirection: "row",
+        justifyContent: "space-between",
+        alignItems: "center",
+        marginBottom: 12,
+    },
+    historyTitle: {
+        color: "#6b7280",
+        fontSize: 12,
+        fontWeight: "800",
+        textTransform: "uppercase",
+        letterSpacing: 0.5,
+    },
+    clearAllButton: {
+        padding: 4,
+    },
+    clearAllText: {
+        color: "#111827",
+        fontSize: 12,
+        fontWeight: "700",
+    },
+    historyList: {
+        gap: 8,
+    },
+    historyItemRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        backgroundColor: "#f9fafb",
+        borderRadius: 12,
+        paddingLeft: 12,
+        borderWidth: 1,
+        borderColor: "#f3f4f6",
+    },
+    historyItem: {
+        flex: 1,
+        flexDirection: "row",
+        alignItems: "center",
+        paddingVertical: 10,
+        gap: 8,
+    },
+    historyItemText: {
+        color: "#111827",
+        fontSize: 14,
+        fontWeight: "600",
+    },
+    historyDeleteButton: {
+        padding: 10,
+    },
+    trendingSection: {
+        width: "100%",
+    },
+    trendingHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        marginBottom: 16,
+    },
+    trendingTitle: {
+        color: "#6b7280",
+        fontSize: 12,
+        fontWeight: "800",
+        textTransform: "uppercase",
+        letterSpacing: 0.5,
     },
     tagCloud: {
         flexDirection: "row",
         flexWrap: "wrap",
-        justifyContent: "center",
-        gap: 10,
-        marginTop: 22,
-        paddingHorizontal: 22,
+        gap: 8,
     },
     tagPill: {
         backgroundColor: "#f9fafb",
         paddingHorizontal: 14,
         paddingVertical: 8,
-        borderRadius: 20,
+        borderRadius: 99,
         borderWidth: 1,
         borderColor: "#f3f4f6",
     },
     tagText: {
-        color: "#4b5563",
+        color: "#111827",
         fontSize: 14,
-        fontWeight: "500",
+        fontWeight: "600",
     },
     bottomBlur: {
         zIndex: 40,

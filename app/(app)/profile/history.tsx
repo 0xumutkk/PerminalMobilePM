@@ -1,6 +1,5 @@
 import React from "react";
 import {
-    ActivityIndicator,
     Pressable,
     StyleSheet,
     Text,
@@ -8,7 +7,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { FlashList } from "@shopify/flash-list";
-import { useRouter } from "expo-router";
+import { useNavigation, useRouter } from "expo-router";
 import { ChevronLeft } from "lucide-react-native";
 import { useAuth } from "../../../hooks/useAuth";
 import {
@@ -16,6 +15,8 @@ import {
     type JupiterHistoryRange,
     type NormalizedJupiterHistoryItem,
 } from "../../../hooks/useJupiterAccountHistory";
+import { PremiumSpinner } from "../../../components/ui/PremiumSpinner";
+import { EdgeSwipeBack } from "../../../components/ui/EdgeSwipeBack";
 
 const HISTORY_RANGES: JupiterHistoryRange[] = ["30D", "90D", "ALL"];
 
@@ -88,6 +89,7 @@ function HistoryRow({
 
 export default function ProfileHistoryScreen() {
     const router = useRouter();
+    const navigation = useNavigation();
     const { activeWallet } = useAuth();
     const {
         error,
@@ -102,10 +104,20 @@ export default function ProfileHistoryScreen() {
         ? "No account history in this range."
         : "Connect a Solana wallet to view Jupiter account history.";
 
+    const handleBack = () => {
+        if (navigation.canGoBack()) {
+            navigation.goBack();
+            return;
+        }
+
+        router.replace("/profile");
+    };
+
     return (
         <SafeAreaView style={styles.container} edges={["top"]}>
+            <EdgeSwipeBack onBack={handleBack} />
             <View style={styles.header}>
-                <Pressable onPress={() => router.back()} style={styles.backButton}>
+                <Pressable onPress={handleBack} style={styles.backButton}>
                     <ChevronLeft size={20} color="#000" strokeWidth={2} />
                 </Pressable>
                 <Text style={styles.headerTitle}>History</Text>
@@ -131,7 +143,7 @@ export default function ProfileHistoryScreen() {
 
             {isLoading && items.length === 0 ? (
                 <View style={styles.centerState}>
-                    <ActivityIndicator color="#34c759" />
+                    <PremiumSpinner size={28} />
                 </View>
             ) : error ? (
                 <View style={styles.centerState}>

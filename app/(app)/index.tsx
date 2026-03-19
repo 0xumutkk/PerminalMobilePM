@@ -24,6 +24,7 @@ import { MarketCardNative } from "../../components/MarketCardNative";
 import { getSolBalance, getSolPriceUsd, getUsdcBalance } from "../../lib/solana";
 import { TradePanel } from "../../components/market/TradePanel";
 import { TradeSide } from "../../hooks/useTrade";
+import { usePositions } from "../../hooks/usePositions";
 import {
     Bell,
     Flame,
@@ -37,8 +38,10 @@ import {
     ArrowDownCircle,
 } from "lucide-react-native";
 import Svg, { Path } from "react-native-svg";
+import { PremiumSpinner } from "../../components/ui/PremiumSpinner";
 
 import Animated, {
+    runOnJS,
     useSharedValue,
     useAnimatedScrollHandler,
     useAnimatedStyle,
@@ -72,6 +75,7 @@ const ODDS_SORT_OPTIONS = [
     { key: "volume", label: "Volume" },
     { key: "change", label: "% Change" },
 ] as const;
+const STICKY_HEADER_TRIGGER_OFFSET = 200;
 
 type OddsSortKey = (typeof ODDS_SORT_OPTIONS)[number]["key"];
 type OddsSortDirection = "up" | "down";
@@ -381,6 +385,7 @@ export default function HomeFeed() {
     const [isDepositModalVisible, setIsDepositModalVisible] = useState(false);
     const [favoriteMarkets, setFavoriteMarkets] = useState<FavoriteMarketRecord[]>([]);
     const [favoritesLoading, setFavoritesLoading] = useState(false);
+    const { activePositions } = usePositions();
 
     const [nextCursor, setNextCursor] = useState<string | null>(null);
     const [isFetchingMore, setIsFetchingMore] = useState(false);
@@ -392,6 +397,7 @@ export default function HomeFeed() {
     const catLayouts = useRef(new Map<string, number>());
     const isScrollingHome = useRef(false);
     const isScrollingSticky = useRef(false);
+    const currentScrollOffsetRef = useRef(0);
 
     const scrollToActiveCategory = useCallback((category: string, animated = true) => {
         if (isScrollingHome.current || isScrollingSticky.current) return;
@@ -659,9 +665,13 @@ export default function HomeFeed() {
     }, [loadBalances, loadFavorites, loadMarkets, selectedCategory]);
 
     const scrollY = useSharedValue(0);
+    const updateCurrentScrollOffset = useCallback((offset: number) => {
+        currentScrollOffsetRef.current = offset;
+    }, []);
     const onScroll = useAnimatedScrollHandler({
         onScroll: (event) => {
             scrollY.value = event.contentOffset.y;
+            runOnJS(updateCurrentScrollOffset)(event.contentOffset.y);
         },
     });
 
@@ -704,12 +714,12 @@ export default function HomeFeed() {
         return () => clearInterval(id);
     }, []);
 
-    const solUsdValue =
-        solBalance != null && solPriceUsd != null ? solBalance * solPriceUsd : null;
-    const portfolioValue = (solUsdValue ?? 0) + (usdcBalance ?? 0);
+    const totalPositionValue = activePositions.reduce((sum, position) => sum + position.currentValue, 0);
+    const positionsAndCashValue = totalPositionValue + (usdcBalance ?? 0);
     const cashValue = usdcBalance ?? 0;
 
-    const portfolioText = formatCompactMoney(portfolioValue);
+    const positionText = formatCompactMoney(totalPositionValue);
+    const positionsAndCashText = formatCompactMoney(positionsAndCashValue);
     const cashText = formatCompactMoney(cashValue);
 
     const filterItems = useMemo(() => {
@@ -773,11 +783,14 @@ export default function HomeFeed() {
         if (previousCategoryRef.current === selectedCategory) return;
 
         previousCategoryRef.current = selectedCategory;
-        scrollY.value = 0;
+        const nextOffset = currentScrollOffsetRef.current >= STICKY_HEADER_TRIGGER_OFFSET
+            ? STICKY_HEADER_TRIGGER_OFFSET
+            : 0;
+        scrollY.value = nextOffset;
 
         requestAnimationFrame(() => {
             listRef.current?.scrollToOffset({
-                offset: 0,
+                offset: nextOffset,
                 animated: false,
             });
         });
@@ -1106,20 +1119,24 @@ export default function HomeFeed() {
                 <View style={styles.balanceRow}>
                     <View style={styles.balanceColumns}>
                         <View>
-                            <Text style={styles.balanceLabel}>Portfolio</Text>
+                            <Text style={styles.balanceLabel}>Positions</Text>
                             {balanceLoading ? (
-                                <ActivityIndicator size="small" color="#777" style={styles.balanceLoader} />
+                                <View style={styles.balanceLoader}>
+                                    <PremiumSpinner size={16} />
+                                </View>
                             ) : (
                                 <Text style={styles.balanceValue}>
-                                    {portfolioText.whole}
-                                    <Text style={styles.balanceValueDecimal}>{portfolioText.decimal}</Text>
+                                    {positionText.whole}
+                                    <Text style={styles.balanceValueDecimal}>{positionText.decimal}</Text>
                                 </Text>
                             )}
                         </View>
                         <View>
                             <Text style={styles.balanceLabel}>Cash</Text>
                             {balanceLoading ? (
-                                <ActivityIndicator size="small" color="#777" style={styles.balanceLoader} />
+                                <View style={styles.balanceLoader}>
+                                    <PremiumSpinner size={16} />
+                                </View>
                             ) : (
                                 <Text style={styles.balanceValue}>
                                     {cashText.whole}
@@ -1169,8 +1186,8 @@ export default function HomeFeed() {
                 <View style={[styles.stickyHeaderContent, { paddingTop: insets.top }]}>
                     <View style={styles.stickyTopRow}>
                         <Text style={styles.stickyBalance}>
-                            {portfolioText.whole}
-                            <Text style={styles.stickyBalanceDecimal}>{portfolioText.decimal}</Text>
+                            {positionsAndCashText.whole}
+                            <Text style={styles.stickyBalanceDecimal}>{positionsAndCashText.decimal}</Text>
                         </Text>
                         <View style={styles.stickyActionGroup}>
                             <Pressable
@@ -1240,7 +1257,7 @@ export default function HomeFeed() {
                         onRefresh={onRefresh}
                         tintColor="#8d8d8d"
                         colors={["#8d8d8d"]}
-                        progressBackgroundColor="#f0f0f0"
+                        progressBackgroundColor="#ffffff"
                     />
                 }
                 onEndReached={selectedCategory === "Favorites" ? null : loadMoreMarkets}
@@ -1248,14 +1265,14 @@ export default function HomeFeed() {
                 ListFooterComponent={() => (
                     isFetchingMore && selectedCategory !== "Favorites" ? (
                         <View style={styles.listFooter}>
-                            <ActivityIndicator size="small" color="#8d8d8d" />
+                            <PremiumSpinner size={18} />
                         </View>
                     ) : <View style={{ height: 40 }} />
                 )}
                 ListEmptyComponent={
                     (selectedCategory === "Favorites" ? favoritesLoading : marketsLoading) ? (
                         <View style={styles.loadingContainer}>
-                            <ActivityIndicator size="large" color="#3b82f7" />
+                            <PremiumSpinner size={34} />
                             <Text style={styles.loadingText}>
                                 {selectedCategory === "Favorites" ? "Loading favorites..." : "Loading markets..."}
                             </Text>
@@ -1275,7 +1292,7 @@ export default function HomeFeed() {
 
             <Modal
                 visible={showOddsSortSheet}
-                animationType="slide"
+                animationType="fade"
                 transparent
                 onRequestClose={() => setShowOddsSortSheet(false)}
             >
@@ -1319,7 +1336,7 @@ export default function HomeFeed() {
 
             <Modal
                 visible={showTradePanel}
-                animationType="slide"
+                animationType="none"
                 transparent
                 onRequestClose={() => setShowTradePanel(false)}
             >
@@ -1349,12 +1366,13 @@ export default function HomeFeed() {
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: "#f0f0f0",
+        backgroundColor: "#ffffff",
     },
     listContent: {
         paddingHorizontal: 0,
         paddingTop: 0,
         paddingBottom: 108,
+        backgroundColor: "#ffffff",
     },
     headerSection: {
         marginBottom: 10,
@@ -1464,7 +1482,7 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         alignItems: "center",
         gap: 8,
-        marginRight: 8,
+        marginRight: 0,
     },
     categoryScrollView: {
         flex: 1,
@@ -1606,11 +1624,9 @@ const styles = StyleSheet.create({
     },
     modalContent: {
         maxHeight: "92%",
-        backgroundColor: "#fff",
-        borderTopLeftRadius: 32,
-        borderTopRightRadius: 32,
-        borderCurve: "continuous",
+        backgroundColor: "transparent",
         padding: 0,
+        overflow: "visible",
     },
     modalHeader: {
         display: "none",

@@ -34,6 +34,7 @@ import Animated, {
 import { BlurView } from "expo-blur";
 import { GlassView, isLiquidGlassAvailable } from "expo-glass-effect";
 import { BottomProgressiveBlur } from "../../../components/ui/BottomProgressiveBlur";
+import { PremiumSpinner } from "../../../components/ui/PremiumSpinner";
 
 const SUPPORTS_GLASS = Platform.OS === "ios" && isLiquidGlassAvailable();
 
@@ -406,7 +407,7 @@ export default function LeaderboardScreen() {
             {renderStickyHeader()}
             {loading ? (
                 <View style={styles.centered}>
-                    <ActivityIndicator size="large" color="#3b82f7" />
+                    <PremiumSpinner size={32} />
                 </View>
             ) : error ? (
                 <View style={styles.centered}>
@@ -424,7 +425,12 @@ export default function LeaderboardScreen() {
                         <LeaderboardRow
                             profile={item}
                             rank={index + 1}
-                            onPress={() => router.push(`/profile/${item.id}`)}
+                            onPress={() =>
+                                router.push({
+                                    pathname: "/profile/[id]",
+                                    params: { id: item.id, from: "leaderboard" },
+                                })
+                            }
                         />
                     )}
                     ListEmptyComponent={

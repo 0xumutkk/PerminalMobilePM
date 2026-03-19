@@ -1,11 +1,20 @@
-import React, { useEffect, useState, useCallback, useRef } from "react";
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Pressable, Platform } from "react-native";
-import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Pressable, Platform, Dimensions } from "react-native";
+import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { ArrowLeft, Info, TrendingUp, Users, Calendar, Plus, Minus, X, ChevronDown, ChevronUp, Database, ArrowUpCircle, BarChart3, ReceiptCent, Star, Share2 } from "lucide-react-native";
 import { GlassView, isLiquidGlassAvailable } from "expo-glass-effect";
 import { LinearGradient } from "expo-linear-gradient";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import Animated, {
+    interpolate,
+    runOnJS,
+    useAnimatedStyle,
+    useSharedValue,
+    withSpring,
+    withTiming,
+} from "react-native-reanimated";
 import type { Market, ChartPoint } from "../../../lib/mock-data";
 import { useEmbeddedSolanaWallet, isConnected } from "@privy-io/expo";
 import { fetchMarketForApp, fetchJupiterEventById, jupiterEventToMarkets } from "../../../lib/jupiter";
@@ -18,9 +27,14 @@ import { Modal } from "react-native";
 import { getTokenBalance } from "../../../lib/solana";
 import { GlassHeader } from "../../../components/ui/GlassHeader";
 import { BottomProgressiveBlur } from "../../../components/ui/BottomProgressiveBlur";
+import { PostTradeShareSheet } from "../../../components/social/PostTradeShareSheet";
+import { SharePositionSheet } from "../../../components/social/SharePositionSheet";
+import { PremiumSpinner } from "../../../components/ui/PremiumSpinner";
 import { usePositions } from "../../../hooks/usePositions";
+import type { Position } from "../../../hooks/usePositions";
 import { getMarketResolution, type OutcomeSide } from "../../../lib/marketResolution";
 import { isFavoriteRoute, toggleFavoriteMarket } from "../../../lib/favoriteMarkets";
+import type { ExecutedTradeResult } from "../../../lib/tradePost";
 import {
     fetchClusteredMarketChartFromJupiter,
     fetchMarketActivityTradesFromJupiter,
@@ -43,8 +57,12 @@ type ChartSnapshot = {
 };
 
 const RANGE_PRIORITY: ChartRange[] = ["1H", "6H", "1D", "1W", "1M", "ALL"];
+const SCREEN_WIDTH = Dimensions.get("window").width;
 
 const SUPPORTS_GLASS = Platform.OS === "ios" && isLiquidGlassAvailable();
+const EDGE_SWIPE_WIDTH = 20;
+const EDGE_SWIPE_TRIGGER_DISTANCE = 72;
+const EDGE_SWIPE_TRIGGER_VELOCITY = 700;
 
 function normalizeOutcomeLabel(label?: string): string {
     return String(label ?? "").replace(/\s+/g, " ").trim();
@@ -190,6 +208,7 @@ function MarketDetailScreen() {
         parentId?: string;
     }>();
     const router = useRouter();
+    const navigation = useNavigation();
     const [market, setMarket] = useState<Market | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -210,9 +229,12 @@ function MarketDetailScreen() {
     const [chartAssetLabel, setChartAssetLabel] = useState<string | undefined>(undefined);
     const [multiChoiceMarkets, setMultiChoiceMarkets] = useState<Market[]>([]);
     const [tradingMarket, setTradingMarket] = useState<Market | null>(null);
+    const [shareTradeState, setShareTradeState] = useState<{ market: Market; trade: ExecutedTradeResult } | null>(null);
+    const [positionToShare, setPositionToShare] = useState<Position | null>(null);
     const [isFavorite, setIsFavorite] = useState(false);
     const chartCacheRef = useRef<Record<string, Partial<Record<ChartRange, ChartSnapshot>>>>({});
     const displayedChartSnapshotRef = useRef<ChartSnapshot | null>(null);
+    const swipeTranslateX = useSharedValue(0);
 
     const solanaWallet = useEmbeddedSolanaWallet();
     const isWalletConnected = isConnected(solanaWallet);
@@ -601,11 +623,70 @@ function MarketDetailScreen() {
         }
     }, [id, market, singleParam]);
 
+    const handleBack = useCallback(() => {
+        if (singleParam === "true" && parentId) {
+            router.replace(`/market/${parentId}`);
+            return;
+        }
+
+        if (navigation.canGoBack()) {
+            router.back();
+            return;
+        }
+
+        router.replace("/");
+    }, [navigation, parentId, router, singleParam]);
+
+    const edgeSwipeGesture = useMemo(
+        () =>
+            Gesture.Pan()
+                .enabled(Platform.OS === "ios" && !showTradePanel)
+                .activeOffsetX([12, 9999])
+                .failOffsetY([-12, 12])
+                .onUpdate((event) => {
+                    swipeTranslateX.value = Math.max(0, event.translationX);
+                })
+                .onEnd((event) => {
+                    const shouldGoBack =
+                        event.translationX >= EDGE_SWIPE_TRIGGER_DISTANCE ||
+                        event.velocityX >= EDGE_SWIPE_TRIGGER_VELOCITY;
+
+                    if (shouldGoBack) {
+                        swipeTranslateX.value = withTiming(
+                            96,
+                            { duration: 140 },
+                            (finished) => {
+                                if (finished) {
+                                    runOnJS(handleBack)();
+                                }
+                            }
+                        );
+                        return;
+                    }
+
+                    swipeTranslateX.value = withSpring(0, {
+                        damping: 22,
+                        stiffness: 260,
+                    });
+                }),
+        [handleBack, showTradePanel, swipeTranslateX]
+    );
+
+    const animatedEdgeCueStyle = useAnimatedStyle(() => {
+        const progress = Math.min(1, swipeTranslateX.value / SCREEN_WIDTH);
+
+        return {
+            opacity: interpolate(progress, [0, 0.12, 1], [0, 0.85, 1]),
+            width: interpolate(progress, [0, 1], [8, 64]),
+            transform: [{ translateX: interpolate(progress, [0, 1], [-18, 0]) }],
+        };
+    });
+
     if (loading) {
         return (
             <View style={[styles.container, styles.centered]}>
                 <StatusBar style="light" />
-                <ActivityIndicator size="large" color="#a855f7" />
+                <PremiumSpinner size={34} />
                 <Text style={styles.loadingText}>Loading market...</Text>
             </View>
         );
@@ -615,13 +696,7 @@ function MarketDetailScreen() {
         return (
             <View style={styles.errorContainer}>
                 <Text style={styles.errorText}>{error ?? "Market not found"}</Text>
-                <TouchableOpacity onPress={() => {
-                    if (singleParam === "true" && parentId) {
-                        router.replace(`/market/${parentId}`);
-                    } else {
-                        router.back();
-                    }
-                }} style={styles.backButton}>
+                <TouchableOpacity onPress={handleBack} style={styles.backButton}>
                     <Text style={styles.backButtonText}>Go Back</Text>
                 </TouchableOpacity>
             </View>
@@ -663,6 +738,35 @@ function MarketDetailScreen() {
                         ? "NO"
                         : currentPosition?.side ?? null;
     const marketResolution = getMarketResolution(market, heldSide);
+    const displayedPositionAmount = heldSide === "YES" ? yesPositionAmount : heldSide === "NO" ? noPositionAmount : 0;
+    const displayedCurrentPrice = heldSide === "NO" ? 1 - market.yesPrice : market.yesPrice;
+    const displayedCostBasis = marketPositions
+        .filter((position) => position.side === heldSide)
+        .reduce((sum, position) => sum + position.costBasis, 0);
+    const displayedCurrentValue = displayedPositionAmount * displayedCurrentPrice;
+    const displayedPnl = displayedCurrentValue - displayedCostBasis;
+    const displayedPnlPct = displayedCostBasis > 0 ? (displayedPnl / displayedCostBasis) * 100 : 0;
+    const shareablePosition: Position | null = heldSide
+        ? {
+            marketId,
+            marketTitle: market.eventTitle || market.title,
+            side: heldSide,
+            amount: displayedPositionAmount,
+            currentPrice: displayedCurrentPrice,
+            currentValue: displayedCurrentValue,
+            costBasis: displayedCostBasis,
+            pnl: displayedPnl,
+            pnlPct: displayedPnlPct,
+            imageUrl: market.imageUrl,
+            mint: currentPosition?.mint || `${marketId}:${heldSide}`,
+            marketStatus: currentPosition?.marketStatus,
+            marketResult: currentPosition?.marketResult,
+            isClosed: currentPosition?.isClosed,
+            isWinner: currentPosition?.isWinner,
+            isRedeemable: currentPosition?.isRedeemable,
+            redeemPayoutPerShare: currentPosition?.redeemPayoutPerShare,
+        }
+        : null;
 
     const preferredBuySide: TradeSide = currentPosition ? currentPosition.side : initialSide;
     const preferredSellSide: TradeSide =
@@ -696,37 +800,33 @@ function MarketDetailScreen() {
         setShowTradePanel(true);
     };
 
-    const handleTradeSuccess = async (details: {
-        signature: string;
-        resolutionStatus: "filled" | "partially_filled";
-        marketId: string;
-    }) => {
-        const { signature, resolutionStatus, marketId: tradedMarketId } = details;
+    const handleTradeSuccess = async (details: ExecutedTradeResult) => {
+        const { marketId: tradedMarketId } = details;
+        const targetMarket = tradingMarket || market;
 
         await refreshPositions();
         if (tradedMarketId === marketId) {
             await refreshVisibleMarketBalances(market);
         }
 
-        Alert.alert(
-            resolutionStatus === "partially_filled" ? "Partially filled" : "Success",
-            `${resolutionStatus === "partially_filled" ? "Trade partially filled" : "Trade filled"}! Signature: ${signature.slice(0, 8)}...`
-        );
         closeTradePanel();
+        setShareTradeState({ market: targetMarket, trade: details });
     };
 
     return (
         <SafeAreaView style={styles.container} edges={["top"]}>
             <StatusBar style="dark" />
+            <Animated.View pointerEvents="none" style={[styles.edgeSwipeCue, animatedEdgeCueStyle]} />
+            {Platform.OS === "ios" ? (
+                <GestureDetector gesture={edgeSwipeGesture}>
+                    <View style={styles.edgeSwipeArea} />
+                </GestureDetector>
+            ) : null}
             <GlassHeader
                 title={market.eventTitle || market.title}
                 onBack={() => {
                     console.log("[MarketDetail] Back pressed");
-                    if (singleParam === "true" && parentId) {
-                        router.replace(`/market/${parentId}`);
-                    } else {
-                        router.back();
-                    }
+                    handleBack();
                 }}
                 rightIcon1={
                     <Star
@@ -916,7 +1016,16 @@ function MarketDetailScreen() {
                                             {market.title}
                                         </Text>
                                     </View>
-                                    <TouchableOpacity activeOpacity={0.7}>
+                                    <TouchableOpacity
+                                        activeOpacity={0.7}
+                                        onPress={() => {
+                                            if (!shareablePosition || shareablePosition.amount <= 0) {
+                                                Alert.alert("No position", "Shareable bir open position bulunamadi.");
+                                                return;
+                                            }
+                                            setPositionToShare(shareablePosition);
+                                        }}
+                                    >
                                         <Share2 color="#6b7280" size={18} />
                                     </TouchableOpacity>
                                 </View>
@@ -927,12 +1036,13 @@ function MarketDetailScreen() {
                                             <Text style={styles.positionGridLabel}>Balance</Text>
                                             <View style={styles.positionValueRow}>
                                                 <Text style={styles.positionMainValue}>
-                                                    {yesBalance > 0 ? (yesBalance >= 1000 ? (yesBalance / 1000).toFixed(1) + "k" : yesBalance.toFixed(1)) :
-                                                        noBalance > 0 ? (noBalance >= 1000 ? (noBalance / 1000).toFixed(1) + "k" : noBalance.toFixed(1)) : "0"}
+                                                    {displayedPositionAmount > 0
+                                                        ? (displayedPositionAmount >= 1000 ? (displayedPositionAmount / 1000).toFixed(1) + "k" : displayedPositionAmount.toFixed(1))
+                                                        : "0"}
                                                 </Text>
-                                                {(yesBalance > 0 || noBalance > 0) && (
-                                                    <View style={[styles.sidePill, { backgroundColor: yesBalance > 0 ? "#10b981" : "#ef4444" }]}>
-                                                        <Text style={styles.sidePillText}>{yesBalance > 0 ? "Yes" : "No"}</Text>
+                                                {heldSide && (
+                                                    <View style={[styles.sidePill, { backgroundColor: heldSide === "YES" ? "#10b981" : "#ef4444" }]}>
+                                                        <Text style={styles.sidePillText}>{heldSide === "YES" ? "Yes" : "No"}</Text>
                                                     </View>
                                                 )}
                                                 <Text style={styles.positionUnitValue}>Shares</Text>
@@ -941,7 +1051,7 @@ function MarketDetailScreen() {
                                         <View style={styles.positionGridItem}>
                                             <Text style={styles.positionGridLabel}>Value</Text>
                                             <Text style={styles.positionMainValue}>
-                                                ${(yesBalance > 0 ? (yesBalance * market.yesPrice) : noBalance > 0 ? (noBalance * (1 - market.yesPrice)) : 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                ${displayedCurrentValue.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                             </Text>
                                         </View>
                                     </View>
@@ -949,11 +1059,17 @@ function MarketDetailScreen() {
                                     <View style={styles.positionGridRow}>
                                         <View style={styles.positionGridItem}>
                                             <Text style={styles.positionGridLabel}>Avg. Cost</Text>
-                                            <Text style={styles.positionMainValue}>--</Text>
+                                            <Text style={styles.positionMainValue}>
+                                                {displayedPositionAmount > 0
+                                                    ? `$${(displayedCostBasis / displayedPositionAmount).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                                                    : "--"}
+                                            </Text>
                                         </View>
                                         <View style={styles.positionGridItem}>
                                             <Text style={styles.positionGridLabel}>Total Invested</Text>
-                                            <Text style={styles.positionMainValue}>--</Text>
+                                            <Text style={styles.positionMainValue}>
+                                                ${displayedCostBasis.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                            </Text>
                                         </View>
                                     </View>
 
@@ -971,10 +1087,14 @@ function MarketDetailScreen() {
                                         <View style={styles.positionGridItem}>
                                             <Text style={styles.positionGridLabel}>Total Return</Text>
                                             <View>
-                                                <Text style={[styles.positionMainValue, { color: "#34c759" }]}>+$0.00</Text>
+                                                <Text style={[styles.positionMainValue, { color: displayedPnl >= 0 ? "#34c759" : "#ef4444" }]}>
+                                                    {displayedPnl >= 0 ? "+" : "-"}${Math.abs(displayedPnl).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                </Text>
                                                 <View style={styles.returnSubRow}>
-                                                    <ChevronUp color="#34c759" size={12} />
-                                                    <Text style={styles.returnPercentText}>+0.0%</Text>
+                                                    {displayedPnl >= 0 ? <ChevronUp color="#34c759" size={12} /> : <ChevronDown color="#ef4444" size={12} />}
+                                                    <Text style={[styles.returnPercentText, { color: displayedPnl >= 0 ? "#34c759" : "#ef4444" }]}>
+                                                        {`${displayedPnlPct >= 0 ? "+" : "-"}${Math.abs(displayedPnlPct).toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`}
+                                                    </Text>
                                                 </View>
                                             </View>
                                         </View>
@@ -1081,7 +1201,9 @@ function MarketDetailScreen() {
                     {activeTab === "activity" && (
                         <View style={styles.tabContent}>
                             {tradesLoading ? (
-                                <ActivityIndicator size="small" color="#a855f7" style={{ marginTop: 12 }} />
+                                <View style={{ marginTop: 12, alignItems: "center" }}>
+                                    <PremiumSpinner size={18} />
+                                </View>
                             ) : trades.length === 0 ? (
                                 <Text style={styles.placeholderText}>No recent trades on-chain</Text>
                             ) : (
@@ -1137,26 +1259,6 @@ function MarketDetailScreen() {
 
                 <View style={{ height: 100 }} />
             </ScrollView>
-
-            {/* Trade Modal */}
-            <Modal
-                visible={showTradePanel}
-                animationType="slide"
-                transparent={true}
-                onRequestClose={closeTradePanel}
-            >
-                <Pressable style={styles.modalOverlay} onPress={closeTradePanel}>
-                    <Pressable style={styles.modalContent} onPress={(e) => e.stopPropagation()}>
-                        <TradePanel
-                            market={tradingMarket || market}
-                            onSuccess={handleTradeSuccess}
-                            initialSide={initialSide}
-                            initialTradeMode={initialTradeMode}
-                            onClose={closeTradePanel}
-                        />
-                    </Pressable>
-                </Pressable>
-            </Modal>
 
             {/* Sticky Footer Actions */}
             <BottomProgressiveBlur style={styles.footerBlurLayer} />
@@ -1230,6 +1332,42 @@ function MarketDetailScreen() {
                     </>
                 )}
             </View>
+
+            {/* Trade Modal */}
+            <Modal
+                visible={showTradePanel}
+                animationType="none"
+                transparent={true}
+                onRequestClose={closeTradePanel}
+            >
+                <Pressable style={styles.modalOverlay} onPress={closeTradePanel}>
+                    <Pressable style={styles.modalContent} onPress={(e) => e.stopPropagation()}>
+                        <TradePanel
+                            market={tradingMarket || market}
+                            onSuccess={handleTradeSuccess}
+                            initialSide={initialSide}
+                            initialTradeMode={initialTradeMode}
+                            onClose={closeTradePanel}
+                        />
+                    </Pressable>
+                </Pressable>
+            </Modal>
+
+            <PostTradeShareSheet
+                visible={!!shareTradeState}
+                market={shareTradeState?.market ?? null}
+                trade={shareTradeState?.trade ?? null}
+                onClose={() => setShareTradeState(null)}
+            />
+            <SharePositionSheet
+                visible={!!positionToShare}
+                position={positionToShare}
+                market={market}
+                onClose={() => setPositionToShare(null)}
+                onShared={() => {
+                    void refreshPositions();
+                }}
+            />
         </SafeAreaView>
     );
 }
@@ -1238,6 +1376,31 @@ const styles = StyleSheet.create({
     container: {
         flex: 1,
         backgroundColor: "#ffffff",
+    },
+    edgeSwipeCue: {
+        position: "absolute",
+        top: 96,
+        left: 0,
+        height: 72,
+        borderTopRightRadius: 18,
+        borderBottomRightRadius: 18,
+        backgroundColor: "rgba(255,255,255,0.92)",
+        borderWidth: 1,
+        borderColor: "rgba(255,255,255,0.95)",
+        shadowColor: "#000",
+        shadowOffset: { width: 6, height: 0 },
+        shadowOpacity: 0.12,
+        shadowRadius: 14,
+        elevation: 6,
+        zIndex: 35,
+    },
+    edgeSwipeArea: {
+        position: "absolute",
+        top: 0,
+        bottom: 0,
+        left: 0,
+        width: EDGE_SWIPE_WIDTH,
+        zIndex: 40,
     },
     centered: {
         justifyContent: "center",
@@ -1887,11 +2050,9 @@ const styles = StyleSheet.create({
     },
     modalContent: {
         maxHeight: "92%",
-        backgroundColor: "#fff",
-        borderTopLeftRadius: 32,
-        borderTopRightRadius: 32,
-        borderCurve: "continuous",
+        backgroundColor: "transparent",
         padding: 0,
+        overflow: "visible",
     },
     modalHeader: {
         display: "none",

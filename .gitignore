@@ -36,6 +36,7 @@ yarn-error.*
 .npmrc
 .agents/
 .cursor/
+docs/
 
 # typescript
 *.tsbuildinfo

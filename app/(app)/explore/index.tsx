@@ -1,32 +1,26 @@
 import React, { useState, useCallback, useEffect } from "react";
-import { StyleSheet, View, Text, TouchableOpacity } from "react-native";
-import { useRouter, useNavigation } from "expo-router";
+import { StyleSheet, View, Text, TouchableOpacity, Modal, Pressable } from "react-native";
+import { useNavigation } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Feed } from "../../../components/social/Feed";
 import { CreatePost } from "../../../components/social/CreatePost";
 import { Image } from "expo-image";
 import { Plus, Grid } from "lucide-react-native";
 import { BottomProgressiveBlur } from "../../../components/ui/BottomProgressiveBlur";
+import Animated, { useAnimatedStyle, useSharedValue, withSpring } from "react-native-reanimated";
 
 export default function ExploreScreen() {
-  const [tab, setTab] = useState<'foryou' | 'following'>('foryou');
+  const [tab, setTab] = useState<"for_you" | "following">("for_you");
   const [refreshKey, setRefreshKey] = useState(0);
   const [showCreatePost, setShowCreatePost] = useState(false);
+  const [tabContainerWidth, setTabContainerWidth] = useState(0);
 
   const handlePostCreated = useCallback(() => {
     setRefreshKey(prev => prev + 1);
     setShowCreatePost(false);
   }, []);
 
-  const router = useRouter();
   const navigation = useNavigation();
-
-  const handleTradePress = useCallback((marketId: string) => {
-    router.push({
-      pathname: "/(app)/market/[id]",
-      params: { id: marketId }
-    });
-  }, [router]);
 
   useEffect(() => {
     // Refresh when landing on the page
@@ -47,13 +41,29 @@ export default function ExploreScreen() {
     };
   }, [navigation]);
 
-  const ListHeaderComponent = () => (
-    <>
-      {showCreatePost && (
-        <CreatePost onPostCreated={handlePostCreated} />
-      )}
-    </>
-  );
+  const underlineOffset = useSharedValue(0);
+  const underlineWidth = useSharedValue(0);
+
+  useEffect(() => {
+    if (!tabContainerWidth) return;
+
+    const segmentWidth = tabContainerWidth / 2;
+    underlineWidth.value = withSpring(segmentWidth, {
+      damping: 18,
+      stiffness: 200,
+      mass: 0.85,
+    });
+    underlineOffset.value = withSpring(tab === "for_you" ? 0 : segmentWidth, {
+      damping: 18,
+      stiffness: 200,
+      mass: 0.85,
+    });
+  }, [tab, tabContainerWidth, underlineOffset, underlineWidth]);
+
+  const animatedUnderlineStyle = useAnimatedStyle(() => ({
+    width: underlineWidth.value,
+    transform: [{ translateX: underlineOffset.value }],
+  }));
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -73,29 +83,46 @@ export default function ExploreScreen() {
       </View>
 
       {/* For You / Following Tabs */}
-      <View style={styles.tabContainer}>
+      <View
+        style={styles.tabContainer}
+        onLayout={(event) => setTabContainerWidth(event.nativeEvent.layout.width)}
+      >
         <TouchableOpacity
-          style={[styles.tabButton, tab === 'foryou' && styles.tabActive]}
-          onPress={() => setTab('foryou')}
+          style={styles.tabButton}
+          onPress={() => setTab("for_you")}
         >
-          <Text style={[styles.tabText, tab === 'foryou' && styles.tabTextActive]}>For you</Text>
+          <Text style={[styles.tabText, tab === "for_you" && styles.tabTextActive]}>For you</Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.tabButton, tab === 'following' && styles.tabActive]}
+          style={styles.tabButton}
           onPress={() => setTab('following')}
         >
           <Text style={[styles.tabText, tab === 'following' && styles.tabTextActive]}>Following</Text>
         </TouchableOpacity>
+        <Animated.View style={[styles.tabUnderline, animatedUnderlineStyle]} />
       </View>
 
       {/* Feed */}
       <Feed
         key={`${tab}-${refreshKey}`}
-        ListHeaderComponent={ListHeaderComponent}
-        onTradePress={handleTradePress}
+        mode={tab}
       />
 
       <BottomProgressiveBlur style={styles.bottomBlur} />
+
+      <Modal
+        visible={showCreatePost}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setShowCreatePost(false)}
+      >
+        <View style={styles.createPostOverlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowCreatePost(false)} />
+          <View style={styles.createPostSheet}>
+            <CreatePost onPostCreated={handlePostCreated} />
+          </View>
+        </View>
+      </Modal>
 
       {/* Floating Action Button */}
       <TouchableOpacity
@@ -153,15 +180,13 @@ const styles = StyleSheet.create({
   tabContainer: {
     flexDirection: "row",
     paddingHorizontal: 16,
-    gap: 24,
     backgroundColor: "#fff",
+    position: "relative",
   },
   tabButton: {
+    flex: 1,
     paddingVertical: 14,
-  },
-  tabActive: {
-    borderBottomWidth: 3,
-    borderBottomColor: "#000",
+    alignItems: "center",
   },
   tabText: {
     color: "rgba(0,0,0,0.4)",
@@ -171,6 +196,14 @@ const styles = StyleSheet.create({
   },
   tabTextActive: {
     color: "#000",
+  },
+  tabUnderline: {
+    position: "absolute",
+    left: 16,
+    bottom: 0,
+    height: 3,
+    borderRadius: 999,
+    backgroundColor: "#000",
   },
   fab: {
     position: "absolute",
@@ -190,5 +223,22 @@ const styles = StyleSheet.create({
   },
   bottomBlur: {
     zIndex: 40,
+  },
+  createPostOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.18)",
+    justifyContent: "flex-start",
+  },
+  createPostSheet: {
+    marginTop: 110,
+    marginHorizontal: 12,
+    borderRadius: 20,
+    overflow: "hidden",
+    backgroundColor: "#fff",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.08,
+    shadowRadius: 24,
+    elevation: 10,
   },
 });
