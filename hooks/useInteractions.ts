@@ -1,24 +1,14 @@
 import { useState, useCallback } from "react";
 import { supabase } from "../lib/supabase";
 import { useAuth } from "./useAuth";
-import { Buffer } from "buffer";
+import { deriveCurrentUserId } from "../lib/currentUserId";
 
 export function useInteractions() {
     const { user, activeWallet } = useAuth();
     const [isSubmitting, setIsSubmitting] = useState(false);
 
     const getCurrentUserId = useCallback(() => {
-        if (user?.email?.address) {
-            try {
-                return Buffer.from(user.email.address).toString('base64').replace(/[^a-zA-Z0-9]/g, "").slice(0, 36);
-            } catch (e) {
-                return user.email.address;
-            }
-        }
-        if (activeWallet?.address) {
-            return activeWallet.address;
-        }
-        return null;
+        return deriveCurrentUserId(user, activeWallet);
     }, [user, activeWallet]);
 
     const toggleLike = useCallback(async (postId: string) => {
@@ -102,10 +92,33 @@ export function useInteractions() {
         }
     }, [getCurrentUserId]);
 
+    const deletePost = useCallback(async (postId: string) => {
+        const userId = getCurrentUserId();
+        if (!userId) return false;
+
+        setIsSubmitting(true);
+        try {
+            const { error } = await supabase
+                .from("posts")
+                .delete()
+                .eq("id", postId)
+                .eq("user_id", userId);
+
+            if (error) throw error;
+            return true;
+        } catch (err) {
+            console.error("Error deleting post:", err);
+            return false;
+        } finally {
+            setIsSubmitting(false);
+        }
+    }, [getCurrentUserId]);
+
     return {
         toggleLike,
         toggleRepost,
         createPost,
+        deletePost,
         isSubmitting
     };
 }

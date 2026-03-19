@@ -1,22 +1,29 @@
 import React, { useState, memo } from "react";
-import { Alert, View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { Alert, Pressable, Share, View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { useRouter } from "expo-router";
 import { Image } from "expo-image";
 import { FeedPost } from "../../hooks/useFeed";
 import type { Market } from "../../lib/mock-data";
 import { getMarketResolution, getTradeMetadataSide } from "../../lib/marketResolution";
 import { formatTimeAgo } from "../../lib/utils";
-import { ArrowUp, ArrowDown, Repeat2, Share2, ShieldCheck } from "lucide-react-native";
+import { ArrowUp, Ellipsis, Repeat2, Share2, ShieldCheck, Trash2 } from "lucide-react-native";
 import { useInteractions } from "../../hooks/useInteractions";
 import { CircularGauge } from "./CircularGauge";
 import { hasResolvablePostMarket, resolvePostMarket, resolvePostMarketId } from "../../lib/postMarkets";
+import { useAuth } from "../../hooks/useAuth";
+import { deriveCurrentUserId } from "../../lib/currentUserId";
 
 interface PostCardProps {
     post: FeedPost;
     onTradePress?: (marketId: string) => void;
+    onPostDeleted?: () => void | Promise<void>;
 }
 
-export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardProps) {
-    const { toggleLike, toggleRepost } = useInteractions();
+export const PostCard = memo(function PostCard({ post, onTradePress, onPostDeleted }: PostCardProps) {
+    const router = useRouter();
+    const { user, activeWallet } = useAuth();
+    const currentUserId = deriveCurrentUserId(user, activeWallet);
+    const { toggleLike, toggleRepost, deletePost, isSubmitting } = useInteractions();
 
     const [liked, setLiked] = useState(post.user_has_liked);
     const [likesCount, setLikesCount] = useState(post.likes_count || 0);
@@ -24,6 +31,23 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
     const [repostsCount, setRepostsCount] = useState(post.reposts_count || 0);
     const [tradeLoading, setTradeLoading] = useState(false);
     const [marketState, setMarketState] = useState<Market | null>(null);
+    const [showOwnerActions, setShowOwnerActions] = useState(false);
+    const isOwnPost = currentUserId != null && post.user_id === currentUserId;
+
+    const handleOpenAuthorProfile = () => {
+        const authorId = post.author?.id || post.user_id;
+        if (!authorId) return;
+
+        if (currentUserId && authorId === currentUserId) {
+            router.push("/profile");
+            return;
+        }
+
+        router.push({
+            pathname: "/profile/[id]",
+            params: { id: authorId, from: "explore" },
+        });
+    };
 
     const handleLike = async () => {
         const newLiked = !liked;
@@ -64,6 +88,26 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
         }
     };
 
+    const handleOpenMarket = async () => {
+        if (tradeLoading) return;
+
+        setTradeLoading(true);
+        try {
+            const resolvedMarketId = await resolvePostMarketId(post);
+            if (!resolvedMarketId) {
+                Alert.alert("Market unavailable", "Bu posttaki market artik acilamiyor.");
+                return;
+            }
+
+            router.push({
+                pathname: "/market/[id]",
+                params: { id: resolvedMarketId, single: "true" },
+            });
+        } finally {
+            setTradeLoading(false);
+        }
+    };
+
     const [liveProbability, setLiveProbability] = useState<number>(50);
     React.useEffect(() => {
         if (!hasResolvablePostMarket(post)) return;
@@ -90,20 +134,13 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
     const timeAgo = formatTimeAgo(post.created_at);
     const postType = (post as any).post_type || 'standard';
     const tradeData = (post as any).trade_metadata || {};
-    const pnlPercent = tradeData?.pnl_percent || 0;
+    const pnlPercent = Number(
+        tradeData?.pnl_percent
+        ?? tradeData?.unrealized_pnl_percent
+        ?? 0
+    );
     const isPosition = postType === 'trade' || postType === 'position';
     const isThesis = postType === 'thesis';
-    const isSold = postType === 'sold';
-    const isBought = postType === 'bought';
-    const isWon = postType === 'won';
-
-    // UI Variants based on post type
-    // Figma Colors: 
-    // Position: #0088FF (Blue)
-    // Thesis: #D9D9D9 (Grey)
-    // Sold: #FF383C (Red)
-    // Bought: #34C759 (Green)
-    // Won: #FBBC05 (Gold)
 
     let cardBgColor = "#D9D9D9";
     let headerBadgeBg = "rgba(0, 0, 0, 0.05)";
@@ -114,26 +151,10 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
         cardBgColor = "#0088FF";
         headerBadgeBg = "rgba(0, 136, 255, 0.15)";
         headerBadgeText = "#0088FF";
-        badgeLabel = "Position";
-    } else if (isSold) {
-        cardBgColor = "#FF383C";
-        headerBadgeBg = "rgba(237, 66, 40, 0.15)";
-        headerBadgeText = "#FF383C";
-        badgeLabel = "Sold";
-    } else if (isWon) {
-        cardBgColor = "#FBBC05";
-        headerBadgeBg = "rgba(251, 188, 5, 0.15)";
-        headerBadgeText = "#FBBC05";
-        badgeLabel = "Won";
-    } else if (isBought) {
-        cardBgColor = "#34C759";
-        headerBadgeBg = "rgba(52, 199, 89, 0.15)";
-        headerBadgeText = "#34C759";
-        badgeLabel = "Bought";
+        badgeLabel = tradeData?.source === "position_snapshot" ? "Position" : "Trade";
     }
 
-    // Text themes
-    const isDarkCard = isPosition || isSold || isBought || isWon;
+    const isDarkCard = isPosition;
     const footerTextColor = isDarkCard ? "#FFFFFF" : "#000000";
     const footerSubTextColor = isDarkCard ? "rgba(255,255,255,0.7)" : "rgba(0,0,0,0.5)";
     const canTrade = hasResolvablePostMarket(post);
@@ -142,12 +163,54 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
     const isResolved = resolution.isResolved;
     const resolutionAccentStyle = resolution.winningSide === "NO" ? styles.resolutionAccentNo : styles.resolutionAccentYes;
     const resolutionButtonStyle = resolution.winningSide === "NO" ? styles.tradeActionButtonResolvedNo : styles.tradeActionButtonResolvedYes;
+    const marketQuestion = marketState?.eventTitle || post.market_question || marketState?.title || "Market question unavailable";
+    const marketImage = marketState?.imageUrl || (post.market_slug ? `https://avatar.vercel.sh/${post.market_slug}` : "https://avatar.vercel.sh/market");
+    const sharesCount = typeof tradeData?.shares_count === "number" ? tradeData.shares_count : Number(tradeData?.shares_count ?? 0);
+    const totalValue = typeof tradeData?.total_value === "number"
+        ? tradeData.total_value
+        : Number(tradeData?.total_value ?? tradeData?.current_value ?? 0);
+    const currentPrice = typeof tradeData?.current_price === "number"
+        ? tradeData.current_price
+        : marketState
+            ? heldSide === "NO"
+                ? 1 - marketState.yesPrice
+                : marketState.yesPrice
+            : 0.5;
+
+    const handleShare = async () => {
+        try {
+            await Share.share({
+                message: [post.content, marketQuestion].filter(Boolean).join("\n\n"),
+            });
+        } catch (error) {
+            console.error("[PostCard] Failed to open native share sheet:", error);
+        }
+    };
+
+    const handleDeletePress = () => {
+        setShowOwnerActions(false);
+        Alert.alert("Delete post", "This post will be removed from your profile and the feed.", [
+            { text: "Cancel", style: "cancel" },
+            {
+                text: "Delete",
+                style: "destructive",
+                onPress: async () => {
+                    const success = await deletePost(post.id);
+                    if (!success) {
+                        Alert.alert("Delete failed", "Post could not be deleted right now.");
+                        return;
+                    }
+                    await onPostDeleted?.();
+                },
+            },
+        ]);
+    };
 
     return (
         <View style={styles.container}>
             {/* Header Row */}
             <View style={styles.header}>
-                <TouchableOpacity>
+                <TouchableOpacity onPress={handleOpenAuthorProfile}>
                     {post.author?.avatar_url ? (
                         <Image source={{ uri: post.author.avatar_url }} style={styles.avatar} />
                     ) : (
@@ -159,7 +222,7 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
                     )}
                 </TouchableOpacity>
 
-                <View style={styles.headerMeta}>
+                <TouchableOpacity style={styles.headerMeta} onPress={handleOpenAuthorProfile}>
                     <View style={styles.nameRow}>
                         <Text style={styles.displayName}>{post.author?.display_name || post.author?.username}</Text>
                         <Text style={styles.usernameTime}>@{post.author?.username} • {timeAgo}</Text>
@@ -173,7 +236,7 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
                             </View>
                         )}
                     </View>
-                </View>
+                </TouchableOpacity>
 
                 {/* PnL and Verification */}
                 <View style={styles.rightHeader}>
@@ -190,6 +253,25 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
                             <Text style={styles.proofBadgeText}>Proof</Text>
                         </View>
                     )}
+                    {isOwnPost ? (
+                        <View style={styles.ownerActionWrap}>
+                            <TouchableOpacity
+                                style={styles.ownerActionButton}
+                                onPress={() => setShowOwnerActions((prev) => !prev)}
+                                disabled={isSubmitting}
+                            >
+                                <Ellipsis size={16} color="#6b7280" />
+                            </TouchableOpacity>
+                            {showOwnerActions ? (
+                                <View style={styles.ownerMenu}>
+                                    <TouchableOpacity style={styles.ownerMenuItem} onPress={handleDeletePress}>
+                                        <Trash2 size={14} color="#dc2626" />
+                                        <Text style={styles.ownerMenuText}>Delete post</Text>
+                                    </TouchableOpacity>
+                                </View>
+                            ) : null}
+                        </View>
+                    ) : null}
                 </View>
             </View>
 
@@ -200,20 +282,20 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
             </View>
 
             {/* Market Card Container */}
-            {post.market_slug && (
-                <View style={[styles.marketCard, { backgroundColor: cardBgColor }]}>
+            {(canTrade || !!marketState || !!post.market_id || !!post.market_question) && (
+                <Pressable style={[styles.marketCard, { backgroundColor: cardBgColor }]} onPress={handleOpenMarket}>
                     {/* Inner Content (White Rounded Box) */}
                     <View style={styles.marketInnerCard}>
                         {/* Market Header */}
                         <View style={styles.marketHeader}>
                             <View style={styles.marketImageWrapper}>
                                 <Image
-                                    source={{ uri: `https://avatar.vercel.sh/${post.market_slug}` }}
+                                    source={{ uri: marketImage }}
                                     style={styles.marketImage}
                                 />
                             </View>
                             <Text style={styles.marketQuestion} numberOfLines={2}>
-                                {post.market_question || "Market question loading..."}
+                                {marketQuestion}
                             </Text>
                             <CircularGauge percentage={liveProbability} size={32} />
                         </View>
@@ -228,16 +310,16 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
                         )}
 
                         {/* Middle Row (Metric Pill + Details) - Only for Position/Sold/Bought/Won */}
-                        {(isPosition || isSold || isBought || isWon) && (
+                        {isPosition && (
                             <View style={styles.positionDataRow}>
-                                <View style={[styles.outcomePill, (isSold || isBought || isWon) && { backgroundColor: 'rgba(0,0,0,0.05)' }]}>
-                                    <Text style={[styles.outcomePillText, (isSold || isBought || isWon) && { color: '#000' }]}>
+                                <View style={styles.outcomePill}>
+                                    <Text style={styles.outcomePillText}>
                                         {tradeData.outcome || 'Yes'}
                                     </Text>
                                 </View>
                                 <View style={styles.metricsGroup}>
-                                    <Text style={styles.metricItemText}>{tradeData.shares_count || '12.3K'} Shares</Text>
-                                    <Text style={styles.metricItemText}>${tradeData.total_value || '12,234.56'}</Text>
+                                    <Text style={styles.metricItemText}>{sharesCount > 0 ? sharesCount.toLocaleString("en-US") : "0"} Shares</Text>
+                                    <Text style={styles.metricItemText}>${totalValue.toLocaleString("en-US", { maximumFractionDigits: 2 })}</Text>
                                 </View>
                             </View>
                         )}
@@ -246,7 +328,7 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
                     {/* Market Card Footer (Metrics + Trade Button) */}
                     <View style={styles.marketFooter}>
                         <View style={styles.footerMetrics}>
-                            {(isPosition || isSold) && (
+                            {isPosition && (
                                 <View style={styles.footerMetricColumn}>
                                     <Text style={[styles.footerMetricLabel, { color: footerSubTextColor }]}>Avg. Entry</Text>
                                     <Text style={[styles.footerMetricValue, { color: footerTextColor }]}>
@@ -257,27 +339,32 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
                             <View style={styles.footerMetricColumn}>
                                 <Text style={[styles.footerMetricLabel, { color: footerSubTextColor }]}>Current Price</Text>
                                 <Text style={[styles.footerMetricValue, { color: footerTextColor }]}>
-                                    {Math.round((tradeData.current_price || 0.97) * 100)}<Text style={{ fontWeight: '400' }}>¢</Text>
+                                    {Math.round(currentPrice * 100)}<Text style={{ fontWeight: '400' }}>¢</Text>
                                 </Text>
                             </View>
                         </View>
 
-                        <TouchableOpacity
+                        <Pressable
                             style={[
                                 styles.tradeActionButton,
                                 isResolved && styles.tradeActionButtonResolved,
                                 isResolved && resolutionButtonStyle,
                                 (!isResolved && (!canTrade || tradeLoading)) && styles.tradeActionButtonDisabled,
                             ]}
-                            onPress={isResolved ? undefined : handleTradePress}
+                            onPress={(event) => {
+                                event.stopPropagation?.();
+                                if (!isResolved) {
+                                    void handleTradePress();
+                                }
+                            }}
                             disabled={isResolved || !canTrade || tradeLoading}
                         >
                             <Text style={styles.tradeActionButtonText}>
                                 {isResolved ? resolution.actionLabel : tradeLoading ? "Loading..." : "Trade"}
                             </Text>
-                        </TouchableOpacity>
+                        </Pressable>
                     </View>
-                </View>
+                </Pressable>
             )}
 
             {/* Action Bar */}
@@ -288,19 +375,14 @@ export const PostCard = memo(function PostCard({ post, onTradePress }: PostCardP
                         <Text style={[styles.actionItemText, liked && { color: "#34c759" }]}>{formatCount(likesCount)}</Text>
                     </TouchableOpacity>
 
-                    <TouchableOpacity style={styles.actionItem}>
-                        <ArrowDown size={16} color="#171717" opacity={0.5} strokeWidth={2} />
-                        <Text style={styles.actionItemText}>2.3K</Text>
-                    </TouchableOpacity>
-
                     <TouchableOpacity style={styles.actionItem} onPress={handleRepost}>
                         <Repeat2 size={16} color={reposted ? "#34c759" : "#171717"} strokeWidth={reposted ? 2.5 : 2} />
                         <Text style={[styles.actionItemText, reposted && { color: "#34c759" }]}>{formatCount(repostsCount)}</Text>
                     </TouchableOpacity>
                 </View>
 
-                <TouchableOpacity style={styles.actionItem}>
-                    <Share2 size={16} color="#171717" style={{ opacity: 0.3 }} strokeWidth={2} />
+                <TouchableOpacity style={styles.actionItem} onPress={handleShare}>
+                    <Share2 size={16} color="#171717" strokeWidth={2} />
                 </TouchableOpacity>
             </View>
         </View>
@@ -372,6 +454,48 @@ const styles = StyleSheet.create({
     },
     rightHeader: {
         alignItems: "flex-end",
+        justifyContent: "center",
+        gap: 6,
+    },
+    ownerActionWrap: {
+        position: "relative",
+        alignItems: "flex-end",
+    },
+    ownerActionButton: {
+        width: 28,
+        height: 28,
+        borderRadius: 14,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(0,0,0,0.04)",
+    },
+    ownerMenu: {
+        position: "absolute",
+        top: 32,
+        right: 0,
+        minWidth: 132,
+        borderRadius: 14,
+        backgroundColor: "#ffffff",
+        borderWidth: 1,
+        borderColor: "rgba(0,0,0,0.08)",
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.08,
+        shadowRadius: 18,
+        elevation: 8,
+        zIndex: 20,
+    },
+    ownerMenuItem: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+    },
+    ownerMenuText: {
+        color: "#dc2626",
+        fontSize: 13,
+        fontWeight: "700",
     },
     pnlText: {
         fontSize: 20,

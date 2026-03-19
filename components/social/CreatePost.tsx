@@ -5,8 +5,11 @@ import { useProfile } from "../../hooks/useProfile";
 import { useInteractions } from "../../hooks/useInteractions";
 import { fetchMarketForApp } from "../../lib/jupiter";
 import { Market } from "../../lib/mock-data";
+import { PostTradeShareSheet } from "./PostTradeShareSheet";
 import { TradePanel } from "../market/TradePanel";
 import { TradeSide, TradeMode } from "../../hooks/useTrade";
+import type { ExecutedTradeResult } from "../../lib/tradePost";
+import { PremiumSpinner } from "../ui/PremiumSpinner";
 
 interface CreatePostProps {
     onPostCreated: () => void;
@@ -25,6 +28,7 @@ export function CreatePost({ onPostCreated, marketId }: CreatePostProps) {
 
     // Trade modal state
     const [showTradePanel, setShowTradePanel] = useState(false);
+    const [pendingTradeShare, setPendingTradeShare] = useState<ExecutedTradeResult | null>(null);
 
     useEffect(() => {
         if (!marketId) {
@@ -48,36 +52,28 @@ export function CreatePost({ onPostCreated, marketId }: CreatePostProps) {
     const handlePostBtn = () => {
         if (!content.trim()) return;
 
-        if (postType === 'trade' || postType === 'thesis') {
+        if (postType === 'trade') {
             if (!currentMarket) return;
-            // Open Trade Panel to finalize the actual blockchain transaction
             setShowTradePanel(true);
             return;
         }
 
-        // Standard post
-        executeSupabasePost({}, false);
+        executeSupabasePost({});
     };
 
     const handleTradeSuccess = async (details: {
         signature: string;
-        outcome: string;
+        outcome: TradeSide;
         amount: number;
         price: number;
+        sharesCount?: number;
+        totalValue?: number;
+        mode: TradeMode;
+        marketId: string;
+        resolutionStatus: "filled" | "partially_filled";
     }) => {
         setShowTradePanel(false);
-
-        // Execute the real post to Supabase with rich metadata
-        const tradeMetadata = {
-            signature: details.signature,
-            marketId: currentMarket?.id,
-            marketTitle: currentMarket?.title,
-            outcome: details.outcome,
-            shares_count: details.amount, // depending on mode this might be shares or usdc
-            avg_entry: details.price,
-            current_price: details.price,
-        };
-        await executeSupabasePost(tradeMetadata, true);
+        setPendingTradeShare(details);
     };
 
     const executeSupabasePost = async (tradeMetadata: any = {}, isVerified: boolean = false) => {
@@ -88,7 +84,7 @@ export function CreatePost({ onPostCreated, marketId }: CreatePostProps) {
             currentMarket?.title,
             postType,
             tradeMetadata,
-            isVerified // true if it went through the TradePanel
+            isVerified
         );
 
         if (result) {
@@ -146,7 +142,9 @@ export function CreatePost({ onPostCreated, marketId }: CreatePostProps) {
                         </>
                     )}
                     {isFetchingMarket && (
-                        <ActivityIndicator style={{ marginLeft: 8 }} size="small" color="#34d399" />
+                        <View style={styles.marketLoader}>
+                            <PremiumSpinner size={16} />
+                        </View>
                     )}
                 </View>
 
@@ -156,7 +154,7 @@ export function CreatePost({ onPostCreated, marketId }: CreatePostProps) {
                         onPress={handlePostBtn}
                         disabled={!content.trim() || isSubmitting}
                     >
-                        {isSubmitting ? <ActivityIndicator color="#000" size="small" /> : <Text style={styles.buttonText}>Post</Text>}
+                        {isSubmitting ? <PremiumSpinner color="#ffffff" size={16} /> : <Text style={styles.buttonText}>Post</Text>}
                     </TouchableOpacity>
                 </View>
             </View>
@@ -164,7 +162,7 @@ export function CreatePost({ onPostCreated, marketId }: CreatePostProps) {
             {/* Trade Panel Overlay for Position / Thesis */}
             <Modal
                 visible={showTradePanel && !!currentMarket}
-                animationType="slide"
+                animationType="none"
                 transparent={true}
                 onRequestClose={() => setShowTradePanel(false)}
             >
@@ -180,11 +178,20 @@ export function CreatePost({ onPostCreated, marketId }: CreatePostProps) {
                                 onSuccess={handleTradeSuccess}
                                 initialSide="YES"
                                 initialTradeMode="BUY"
+                                onClose={() => setShowTradePanel(false)}
                             />
                         )}
                     </View>
                 </View>
             </Modal>
+
+            <PostTradeShareSheet
+                visible={!!pendingTradeShare && !!currentMarket}
+                market={currentMarket}
+                trade={pendingTradeShare}
+                onClose={() => setPendingTradeShare(null)}
+                onShared={onPostCreated}
+            />
         </View>
     );
 }
@@ -232,6 +239,10 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         gap: 8,
         marginBottom: 12,
+    },
+    marketLoader: {
+        marginLeft: 8,
+        justifyContent: "center",
     },
     typeButton: {
         paddingHorizontal: 12,

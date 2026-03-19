@@ -1,28 +1,42 @@
 import React, { useState } from "react";
 import { View, StyleSheet, RefreshControl, Text, ActivityIndicator, TouchableOpacity, Modal } from "react-native";
 import { FlashList } from "@shopify/flash-list";
-import { useFeed } from "../../hooks/useFeed";
+import { useFeed, type FeedMode } from "../../hooks/useFeed";
+import { useAuth } from "../../hooks/useAuth";
 import { PostCard } from "./PostCard";
 import { CreatePost } from "./CreatePost";
+import { PostTradeShareSheet } from "./PostTradeShareSheet";
 import { TradePanel } from "../market/TradePanel";
 import { Market } from "../../lib/mock-data";
 import { fetchMarketForApp } from "../../lib/jupiter";
+import { deriveCurrentUserId } from "../../lib/currentUserId";
+import type { ExecutedTradeResult } from "../../lib/tradePost";
+import { PremiumSpinner } from "../ui/PremiumSpinner";
 
 interface FeedProps {
+    mode: FeedMode;
     userId?: string;
     marketId?: string;
     ListHeaderComponent?: React.ComponentType | React.ReactElement | null;
     onTradePress?: (marketId: string) => void;
 }
 
-export function Feed({ userId, marketId, ListHeaderComponent: CustomListHeaderComponent, onTradePress }: FeedProps) {
-    const { posts, isLoading, error, fetchFeed } = useFeed(userId, marketId);
+export function Feed({ mode, userId, marketId, ListHeaderComponent: CustomListHeaderComponent, onTradePress }: FeedProps) {
+    const { user, activeWallet } = useAuth();
+    const viewerId = deriveCurrentUserId(user, activeWallet);
+    const { posts, isLoading, isFetchingMore, hasMore, error, fetchFeed, fetchNextPage } = useFeed({
+        mode,
+        viewerId,
+        userId,
+        marketId,
+    });
     const [refreshing, setRefreshing] = useState(false);
 
     // Trade Panel State
     const [tradingMarketId, setTradingMarketId] = useState<string | null>(null);
     const [tradingMarket, setTradingMarket] = useState<Market | null>(null);
     const [isFetchingMarket, setIsFetchingMarket] = useState(false);
+    const [shareTradeState, setShareTradeState] = useState<{ market: Market; trade: ExecutedTradeResult } | null>(null);
 
     const handleTradePress = async (id: string) => {
         if (onTradePress) {
@@ -52,6 +66,29 @@ export function Feed({ userId, marketId, ListHeaderComponent: CustomListHeaderCo
         setTradingMarket(null);
     };
 
+    const handleTradeSuccess = async (details: {
+        signature: string;
+        outcome: "YES" | "NO";
+        amount: number;
+        sharesCount?: number;
+        totalValue?: number;
+        price: number;
+        mode: "BUY" | "SELL";
+        marketId: string;
+        resolutionStatus: "filled" | "partially_filled";
+    }) => {
+        if (!tradingMarket) {
+            handleCloseTrade();
+            return;
+        }
+
+        setShareTradeState({
+            market: tradingMarket,
+            trade: details,
+        });
+        handleCloseTrade();
+    };
+
     const onRefresh = async () => {
         setRefreshing(true);
         await fetchFeed();
@@ -59,14 +96,14 @@ export function Feed({ userId, marketId, ListHeaderComponent: CustomListHeaderCo
     };
 
     const renderItem = React.useCallback(({ item }: { item: typeof posts[0] }) => (
-        <PostCard post={item} onTradePress={onTradePress || handleTradePress} />
-    ), [onTradePress]);
+        <PostCard post={item} onTradePress={onTradePress || handleTradePress} onPostDeleted={fetchFeed} />
+    ), [fetchFeed, handleTradePress, onTradePress]);
 
     const ListEmptyComponent = React.useCallback(() => {
         if (isLoading) {
             return (
                 <View style={styles.centerContainer}>
-                    <ActivityIndicator size="large" color="#34d399" />
+                    <PremiumSpinner size={32} />
                 </View>
             );
         }
@@ -107,21 +144,34 @@ export function Feed({ userId, marketId, ListHeaderComponent: CustomListHeaderCo
                 refreshControl={
                     <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#34d399" />
                 }
+                onEndReached={() => {
+                    if (hasMore) {
+                        void fetchNextPage();
+                    }
+                }}
+                onEndReachedThreshold={0.5}
                 ListHeaderComponent={CustomListHeaderComponent || (!userId ? ListHeaderComponent : undefined)}
                 ListEmptyComponent={ListEmptyComponent}
+                ListFooterComponent={
+                    isFetchingMore ? (
+                        <View style={styles.footerLoader}>
+                            <PremiumSpinner size={18} />
+                        </View>
+                    ) : null
+                }
             />
 
             {/* Loading Modal Overaly for fetching Market data */}
             {isFetchingMarket && (
                 <View style={styles.fetchingOverlay}>
-                    <ActivityIndicator size="large" color="#34d399" />
+                    <PremiumSpinner size={34} />
                 </View>
             )}
 
             {/* Trade Panel Modal */}
             <Modal
                 visible={!!tradingMarket}
-                animationType="slide"
+                animationType="none"
                 transparent={true}
                 onRequestClose={handleCloseTrade}
             >
@@ -134,7 +184,7 @@ export function Feed({ userId, marketId, ListHeaderComponent: CustomListHeaderCo
                         {tradingMarket && (
                             <TradePanel
                                 market={tradingMarket}
-                                onSuccess={handleCloseTrade}
+                                onSuccess={handleTradeSuccess}
                                 initialSide="YES"
                                 initialTradeMode="BUY"
                                 onClose={handleCloseTrade}
@@ -143,6 +193,16 @@ export function Feed({ userId, marketId, ListHeaderComponent: CustomListHeaderCo
                     </View>
                 </View>
             </Modal>
+
+            <PostTradeShareSheet
+                visible={!!shareTradeState}
+                market={shareTradeState?.market ?? null}
+                trade={shareTradeState?.trade ?? null}
+                onClose={() => setShareTradeState(null)}
+                onShared={() => {
+                    void fetchFeed();
+                }}
+            />
         </View>
     );
 }
@@ -179,6 +239,11 @@ const styles = StyleSheet.create({
     },
     container: {
         flex: 1,
+    },
+    footerLoader: {
+        paddingVertical: 16,
+        alignItems: "center",
+        justifyContent: "center",
     },
     fetchingOverlay: {
         ...StyleSheet.absoluteFillObject,
