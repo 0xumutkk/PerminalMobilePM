@@ -23,6 +23,8 @@ interface TradePanelProps {
         signature: string;
         outcome: TradeSide;
         amount: number;
+        sharesCount?: number;
+        totalValue?: number;
         price: number;
         mode: TradeMode;
         marketId: string;
@@ -38,8 +40,8 @@ const MIN_BUY_ORDER_USD = 1.01;
 const PANEL_HEIGHT = SCREEN_HEIGHT * 0.92;
 const CONTENT_HORIZONTAL_PADDING = 12;
 const KEY_HEIGHT = 46;
-const FOOTER_BOTTOM_PADDING = Platform.OS === "ios" ? 6 : 4;
-const FEEDBACK_BOTTOM = Platform.OS === "ios" ? 8 : 6;
+const FOOTER_BOTTOM_PADDING = Platform.OS === "ios" ? 16 : 12;
+const FEEDBACK_BOTTOM = FOOTER_BOTTOM_PADDING + 2;
 const LOW_SOL_BALANCE_WARNING = 0.003;
 
 function formatPositionId(positionId: string): string {
@@ -397,11 +399,21 @@ export function TradePanel({
             }
 
             if (onSuccess) {
+                const effectivePrice = quotePrice > 0 ? quotePrice : (side === "YES" ? market.yesPrice : (1 - market.yesPrice));
+                const sharesCount = tradeMode === "BUY"
+                    ? (filledContracts > 0 ? filledContracts : estimatedBuyContracts)
+                    : numericAmount;
+                const totalValue = tradeMode === "BUY"
+                    ? (quoteTotalCost > 0 ? quoteTotalCost : numericAmount)
+                    : sharesCount * effectivePrice;
+
                 await onSuccess({
                     signature: result.signature,
                     outcome: side,
                     amount: numericAmount,
-                    price: quotePrice > 0 ? quotePrice : (side === "YES" ? market.yesPrice : (1 - market.yesPrice)),
+                    sharesCount,
+                    totalValue,
+                    price: effectivePrice,
                     mode: tradeMode,
                     marketId,
                     resolutionStatus: result.resolutionStatus,

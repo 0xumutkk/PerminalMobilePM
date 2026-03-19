@@ -1,11 +1,13 @@
 import React from "react";
 import { View, Text, StyleSheet, Pressable } from "react-native";
 import { Image } from "expo-image";
+import { Share2 } from "lucide-react-native";
 import { Position } from "../../hooks/usePositions";
 
 interface PositionCardProps {
     position: Position;
     onPress?: () => void;
+    onSharePress?: () => void;
 }
 
 function formatCompactNumber(value: number): string {
@@ -24,7 +26,7 @@ function formatCents(value: number): string {
     return `${cents}c`;
 }
 
-export default function PositionCard({ position, onPress }: PositionCardProps) {
+export default function PositionCard({ position, onPress, onSharePress }: PositionCardProps) {
     const isPositive = position.pnl >= 0;
     const sideLabel = position.side === "YES" ? "Yes" : "No";
     const sideBadgeStyle = position.side === "YES" ? styles.yesBg : styles.noBg;
@@ -49,6 +51,17 @@ export default function PositionCard({ position, onPress }: PositionCardProps) {
                     </View>
 
                     <View style={styles.rightSide}>
+                        {onSharePress ? (
+                            <Pressable
+                                style={styles.shareButton}
+                                onPress={(event) => {
+                                    event.stopPropagation?.();
+                                    onSharePress();
+                                }}
+                            >
+                                <Share2 size={15} color="#6b7280" strokeWidth={2.1} />
+                            </Pressable>
+                        ) : null}
                         <Text style={styles.valueText}>
                             ${formatCompactNumber(position.currentValue)}
                         </Text>
@@ -128,6 +141,15 @@ const styles = StyleSheet.create({
         alignItems: "flex-end",
         gap: 2,
         minWidth: 84,
+    },
+    shareButton: {
+        width: 28,
+        height: 28,
+        borderRadius: 14,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(0,0,0,0.04)",
+        marginBottom: 2,
     },
     valueText: {
         color: "#000",

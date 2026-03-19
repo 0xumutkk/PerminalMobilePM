@@ -111,6 +111,7 @@ const STRICT_PRICE_GUARD = process.env.EXPO_PUBLIC_STRICT_PRICE_GUARD === "true"
 const MIN_BUY_ORDER_USD = 1.01;
 const ORDER_STATUS_POLL_INTERVAL_MS = 2_000;
 const ORDER_STATUS_TIMEOUT_MS = 30_000;
+const STABLE_DECIMALS_FACTOR = 1_000_000;
 
 function sleep(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -178,6 +179,22 @@ function getTerminalOrderMessage(status: JupiterKnownOrderStatus): string | null
         return "Order expired before it filled. You can adjust and try again.";
     }
     return null;
+}
+
+function isNoSwapRouteError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error ?? "");
+    return /no swap route is available|no routes found/i.test(message);
+}
+
+function roundUsdUp(value: number, decimals: number = 2): number {
+    const factor = 10 ** decimals;
+    return Math.ceil(Math.max(0, value) * factor) / factor;
+}
+
+function microUsdToUsd(value: string | number | null | undefined): number {
+    const raw = typeof value === "string" ? parseInt(value, 10) : Number(value ?? 0);
+    if (!Number.isFinite(raw) || raw <= 0) return 0;
+    return raw / STABLE_DECIMALS_FACTOR;
 }
 
 export function useTrade() {
@@ -279,15 +296,69 @@ export function useTrade() {
             throw new Error("Please connect your wallet first");
         }
 
-        const outputAmount = usdToMicroUsd(missingAmountUsd);
+        const normalizedMissingAmountUsd = roundUsdUp(missingAmountUsd);
+        const outputAmount = usdToMicroUsd(normalizedMissingAmountUsd);
         if (outputAmount <= 0) return null;
 
-        const quote = await jupiterSwapService.getExactOutQuote({
-            inputMint: USDC_MINT_ADDRESS,
-            outputMint: JUP_USD_MINT_ADDRESS,
-            outputAmount: String(outputAmount),
-            slippageBps,
-        });
+        let quote;
+
+        try {
+            quote = await jupiterSwapService.getExactOutQuote({
+                inputMint: USDC_MINT_ADDRESS,
+                outputMint: JUP_USD_MINT_ADDRESS,
+                outputAmount: String(outputAmount),
+                slippageBps,
+            });
+        } catch (error) {
+            if (!isNoSwapRouteError(error)) {
+                throw error;
+            }
+
+            const exactInAttempts = [
+                {
+                    inputUsd: roundUsdUp(normalizedMissingAmountUsd * 1.02 + 0.01),
+                    restrictIntermediateTokens: true,
+                },
+                {
+                    inputUsd: roundUsdUp(normalizedMissingAmountUsd * 1.05 + 0.02),
+                    restrictIntermediateTokens: false,
+                },
+            ];
+
+            let fallbackError: Error | null = null;
+            let fallbackQuote = null;
+
+            for (const attempt of exactInAttempts) {
+                try {
+                    const nextQuote = await jupiterSwapService.getExactInQuote({
+                        inputMint: USDC_MINT_ADDRESS,
+                        outputMint: JUP_USD_MINT_ADDRESS,
+                        inputAmount: String(usdToMicroUsd(attempt.inputUsd)),
+                        slippageBps,
+                        restrictIntermediateTokens: attempt.restrictIntermediateTokens,
+                    });
+
+                    const quotedOutputUsd = microUsdToUsd(nextQuote.outAmount);
+                    if (quotedOutputUsd + 0.000001 < normalizedMissingAmountUsd) {
+                        fallbackError = new Error(
+                            `Top-up route only returns ${quotedOutputUsd.toFixed(2)} JupUSD for ${attempt.inputUsd.toFixed(2)} USDC.`
+                        );
+                        continue;
+                    }
+
+                    fallbackQuote = nextQuote;
+                    break;
+                } catch (nextError) {
+                    fallbackError = nextError instanceof Error ? nextError : new Error("Fallback top-up quote failed.");
+                }
+            }
+
+            if (!fallbackQuote) {
+                throw fallbackError ?? error;
+            }
+
+            quote = fallbackQuote;
+        }
 
         const swapTx = await jupiterSwapService.buildSwapTransaction({
             userPublicKey: walletAddress,
@@ -666,8 +737,11 @@ export function useTrade() {
                     signature: null,
                 }));
             } catch (error) {
-                console.warn("[Trade] JupUSD top-up swap error:", error);
-                const message = error instanceof Error ? error.message : "Failed to prepare JupUSD for trade.";
+                const message = isNoSwapRouteError(error)
+                    ? "USDC to JupUSD top-up is unavailable for this amount right now. Try a slightly different amount or wait and try again."
+                    : error instanceof Error
+                        ? error.message
+                        : "Failed to prepare JupUSD for trade.";
                 setState((s) => ({
                     ...s,
                     isLoading: false,

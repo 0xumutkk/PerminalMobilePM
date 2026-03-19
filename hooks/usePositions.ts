@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useAuth } from "./useAuth";
 import { fetchJupiterPositions, fetchMarketForApp } from "../lib/jupiter";
 import { microUsdToUsd } from "../lib/types/jupiter.types";
@@ -255,40 +255,47 @@ export function applyOptimisticTrade({
     setOptimisticEntries(normalizedOwner, nextEntries);
 }
 
-export function usePositions() {
+export function usePositions(ownerWalletAddress?: string | null) {
     const { activeWallet } = useAuth();
     const [activePositions, setActivePositions] = useState<Position[]>([]);
     const [closedPositions, setClosedPositions] = useState<Position[]>([]);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const targetWalletAddress = useMemo(() => {
+        if (ownerWalletAddress !== undefined) {
+            return ownerWalletAddress?.trim() ?? "";
+        }
+
+        return activeWallet?.address?.trim() || "";
+    }, [activeWallet?.address, ownerWalletAddress]);
 
     useEffect(() => {
-        if (!activeWallet?.address) {
+        if (!targetWalletAddress) {
             setActivePositions([]);
             setClosedPositions([]);
             return;
         }
 
-        const cachedPositions = getCachedPositions(activeWallet.address);
+        const cachedPositions = getCachedPositions(targetWalletAddress);
         if (!cachedPositions) return;
 
         setActivePositions(cachedPositions.activePositions);
         setClosedPositions(cachedPositions.closedPositions);
-    }, [activeWallet?.address]);
+    }, [targetWalletAddress]);
 
     const fetchPositions = useCallback(async () => {
-        if (!activeWallet?.address) {
+        if (!targetWalletAddress) {
             setActivePositions([]);
             setClosedPositions([]);
             return;
         }
 
-        console.log("[usePositions] Fetching Jupiter positions for:", activeWallet.address);
+        console.log("[usePositions] Fetching Jupiter positions for:", targetWalletAddress);
         setIsLoading(true);
         setError(null);
 
         try {
-            const jupPositions = await fetchJupiterPositions(activeWallet.address);
+            const jupPositions = await fetchJupiterPositions(targetWalletAddress);
             console.log(`[usePositions] Found ${jupPositions.length} positions`);
 
             const missingMetadataIds = Array.from(
@@ -394,7 +401,7 @@ export function usePositions() {
                 };
             }).filter((position) => position.amount > 0);
 
-            const optimisticEntries = getActiveOptimisticEntries(activeWallet.address);
+            const optimisticEntries = getActiveOptimisticEntries(targetWalletAddress);
             const mergedPositionsMap = new Map<string, Position>(discoveredPositions.map((position) => [position.mint, position]));
             const unresolvedOptimisticEntries: OptimisticPositionEntry[] = [];
 
@@ -408,7 +415,7 @@ export function usePositions() {
                 mergedPositionsMap.set(optimisticEntry.mint, optimisticEntry);
             }
 
-            setOptimisticEntries(activeWallet.address, unresolvedOptimisticEntries);
+            setOptimisticEntries(targetWalletAddress, unresolvedOptimisticEntries);
             const mergedPositions = Array.from(mergedPositionsMap.values()).filter((position) => position.amount > 0);
 
             const active = mergedPositions
@@ -419,7 +426,7 @@ export function usePositions() {
                 .filter((p) => p.isClosed)
                 .sort((a, b) => b.currentValue - a.currentValue); // Just putting largest on top
 
-            setCachedPositions(activeWallet.address, active, closed);
+            setCachedPositions(targetWalletAddress, active, closed);
             setActivePositions(active);
             setClosedPositions(closed);
         } catch (err) {
@@ -428,7 +435,7 @@ export function usePositions() {
         } finally {
             setIsLoading(false);
         }
-    }, [activeWallet]);
+    }, [targetWalletAddress]);
 
     useEffect(() => {
         fetchPositions();

@@ -64,11 +64,39 @@ async function parseErrorResponse(res: Response): Promise<string> {
 }
 
 export const jupiterSwapService = {
+    async getExactInQuote(params: {
+        inputMint: string;
+        outputMint: string;
+        inputAmount: string;
+        slippageBps?: number;
+        restrictIntermediateTokens?: boolean;
+    }): Promise<JupiterSwapQuoteResponse> {
+        const url = new URL(`${JUPITER_SWAP_BASE_URL}/quote`);
+        url.searchParams.set("inputMint", params.inputMint);
+        url.searchParams.set("outputMint", params.outputMint);
+        url.searchParams.set("amount", params.inputAmount);
+        url.searchParams.set("swapMode", "ExactIn");
+        url.searchParams.set("slippageBps", String(params.slippageBps ?? 100));
+        url.searchParams.set("restrictIntermediateTokens", params.restrictIntermediateTokens === false ? "false" : "true");
+        url.searchParams.set("instructionVersion", "V2");
+
+        const res = await fetch(url.toString(), {
+            headers: getHeaders(),
+        });
+
+        if (!res.ok) {
+            throw new Error(await parseErrorResponse(res));
+        }
+
+        return (await res.json()) as JupiterSwapQuoteResponse;
+    },
+
     async getExactOutQuote(params: {
         inputMint: string;
         outputMint: string;
         outputAmount: string;
         slippageBps?: number;
+        restrictIntermediateTokens?: boolean;
     }): Promise<JupiterSwapQuoteResponse> {
         const url = new URL(`${JUPITER_SWAP_BASE_URL}/quote`);
         url.searchParams.set("inputMint", params.inputMint);
@@ -76,7 +104,7 @@ export const jupiterSwapService = {
         url.searchParams.set("amount", params.outputAmount);
         url.searchParams.set("swapMode", "ExactOut");
         url.searchParams.set("slippageBps", String(params.slippageBps ?? 100));
-        url.searchParams.set("restrictIntermediateTokens", "true");
+        url.searchParams.set("restrictIntermediateTokens", params.restrictIntermediateTokens === false ? "false" : "true");
         url.searchParams.set("instructionVersion", "V2");
 
         const res = await fetch(url.toString(), {
