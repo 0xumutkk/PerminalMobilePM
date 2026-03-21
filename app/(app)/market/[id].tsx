@@ -232,6 +232,7 @@ function MarketDetailScreen() {
     const [shareTradeState, setShareTradeState] = useState<{ market: Market; trade: ExecutedTradeResult } | null>(null);
     const [positionToShare, setPositionToShare] = useState<Position | null>(null);
     const [isFavorite, setIsFavorite] = useState(false);
+    const [isClusterLoading, setIsClusterLoading] = useState(false);
     const chartCacheRef = useRef<Record<string, Partial<Record<ChartRange, ChartSnapshot>>>>({});
     const displayedChartSnapshotRef = useRef<ChartSnapshot | null>(null);
     const swipeTranslateX = useSharedValue(0);
@@ -388,6 +389,7 @@ function MarketDetailScreen() {
 
         let cancelled = false;
         const loadClusterMarkets = async () => {
+            setIsClusterLoading(true);
             try {
                 const provider =
                     market.provider === "polymarket"
@@ -423,6 +425,10 @@ function MarketDetailScreen() {
             } catch (err) {
                 if (!cancelled) {
                     console.warn("[MarketDetail] Failed to load clustered event markets:", err);
+                }
+            } finally {
+                if (!cancelled) {
+                    setIsClusterLoading(false);
                 }
             }
         };
@@ -885,6 +891,7 @@ function MarketDetailScreen() {
                     valueType={chartValueType}
                     assetLabel={chartAssetLabel}
                     headlineValue={market.yesPrice}
+                    isClusteredExpected={isClusterLoading || clusterMarkets.length > 1}
                 />
 
                 {/* Position / About / Holders / Activity block (chart altı, ~350px) */}

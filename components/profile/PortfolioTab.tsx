@@ -131,6 +131,7 @@ export default function PortfolioTab({
                         valueType="price"
                         curveType="step"
                         hideHeader
+                        isLoading={isPerformanceLoading}
                     />
                     {isPerformanceLoading ? (
                         <View style={styles.chartLoadingOverlay} pointerEvents="none">

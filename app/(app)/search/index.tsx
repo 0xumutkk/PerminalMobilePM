@@ -703,7 +703,7 @@ export default function SearchScreen() {
                             style={styles.input}
                             value={query}
                             onChangeText={setQuery}
-                            autoFocus
+                            autoFocus={false}
                             autoCapitalize="none"
                             autoCorrect={false}
                             returnKeyType="search"

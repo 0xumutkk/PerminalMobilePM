@@ -391,6 +391,8 @@ export default function HomeFeed() {
     const [isFetchingMore, setIsFetchingMore] = useState(false);
     const [visibleGroupLimit, setVisibleGroupLimit] = useState(POPULAR_GROUP_BATCH_SIZE);
     const [popularEventOrder, setPopularEventOrder] = useState<string[]>([]);
+    const [persistentEventOrders, setPersistentEventOrders] = useState<Record<string, string[]>>({});
+    const initialOrderCapturedRef = useRef<Record<string, boolean>>({});
 
     const homeCatScrollRef = useRef<ScrollView>(null);
     const stickyCatScrollRef = useRef<ScrollView>(null);
@@ -572,8 +574,26 @@ export default function HomeFeed() {
             if (seq === marketLoadSeq.current) {
                 console.log(`[HomeFeed] Setting markets state (seq=${seq})`);
                 setMarkets(list);
-                setPopularEventOrder(buildPopularEventOrder(list));
+                const popularOrder = buildPopularEventOrder(list);
+                setPopularEventOrder(popularOrder);
                 setCategories(orderedCategories);
+
+                // Initialize persistent order for categories if not already captured
+                setPersistentEventOrders((prev) => {
+                    const next = { ...prev };
+                    
+                    // Always refresh Popular order on full load
+                    next["Popular"] = popularOrder;
+                    
+                    // For other categories, if we don't have an order yet, capture it from this load
+                    for (const cat of orderedCategories) {
+                        if (!next[cat]) {
+                            const catMarkets = list.filter(m => getMarketCategory(m) === cat);
+                            next[cat] = Array.from(new Set(catMarkets.map(m => m.eventId || m.id)));
+                        }
+                    }
+                    return next;
+                });
             }
         } catch (e) {
             console.error("[HomeFeed] loadMarkets top-level error:", e);
@@ -582,6 +602,8 @@ export default function HomeFeed() {
                 setMarkets([]);
                 setPopularEventOrder([]);
                 setCategories([]);
+                setPersistentEventOrders({});
+                initialOrderCapturedRef.current = {};
             }
         } finally {
             if (seq === marketLoadSeq.current) {
@@ -624,6 +646,28 @@ export default function HomeFeed() {
 
                     return next;
                 });
+
+                // Update persistent orders with new markets
+                setPersistentEventOrders((prev) => {
+                    const next = { ...prev };
+                    
+                    // Popular is already handled by popularEventOrder state, but we sync it
+                    const newPopularOrder = buildPopularEventOrder(moreMarkets);
+                    const existingPopular = new Set(next["Popular"] || []);
+                    next["Popular"] = [...(next["Popular"] || []), ...newPopularOrder.filter(id => !existingPopular.has(id))];
+
+                    // For each category, append new event IDs to existing order
+                    for (const market of moreMarkets) {
+                        const cat = getMarketCategory(market);
+                        const eventId = market.eventId || market.id;
+                        const currentOrder = next[cat] || [];
+                        if (!currentOrder.includes(eventId)) {
+                            next[cat] = [...currentOrder, eventId];
+                        }
+                    }
+                    return next;
+                });
+
                 setVisibleGroupLimit((prev) => prev + (
                     selectedCategory === "Popular" ? POPULAR_GROUP_BATCH_SIZE : CATEGORY_GROUP_BATCH_SIZE
                 ));
@@ -660,6 +704,9 @@ export default function HomeFeed() {
         setVisibleGroupLimit(
             selectedCategory === "Popular" ? POPULAR_GROUP_BATCH_SIZE : CATEGORY_GROUP_BATCH_SIZE
         );
+        // Clear persistent orders on manual refresh to allow re-sorting
+        setPersistentEventOrders({});
+        initialOrderCapturedRef.current = {};
         await Promise.all([loadMarkets(), loadBalances(), loadFavorites()]);
         setRefreshing(false);
     }, [loadBalances, loadFavorites, loadMarkets, selectedCategory]);
@@ -897,11 +944,20 @@ export default function HomeFeed() {
             popularOrder.set(eventId, index);
         });
 
-        const fallbackOrder = selectedCategory === "Popular" ? popularOrder : defaultOrder;
+        const persistentOrder = new Map<string, number>();
+        if (persistentEventOrders[selectedCategory]) {
+            persistentEventOrders[selectedCategory].forEach((eventId, index) => {
+                persistentOrder.set(eventId, index);
+            });
+        }
+
+        const fallbackOrder = selectedCategory === "Popular" 
+            ? popularOrder 
+            : (persistentOrder.size > 0 ? persistentOrder : defaultOrder);
 
         return sortMarketGroupsForOdds(grouped, oddsSortKey, oddsSortDirection, fallbackOrder)
             .slice(0, visibleGroupLimit);
-    }, [filteredMarkets, oddsSortDirection, oddsSortKey, popularEventOrder, selectedCategory, visibleGroupLimit]);
+    }, [filteredMarkets, oddsSortDirection, oddsSortKey, popularEventOrder, selectedCategory, visibleGroupLimit, persistentEventOrders]);
 
     const liveMarketsById = useMemo(() => {
         const next = new Map<string, Market>();

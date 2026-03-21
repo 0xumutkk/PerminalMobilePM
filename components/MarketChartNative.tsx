@@ -5,6 +5,7 @@ import Svg, { Path, Defs, LinearGradient, Stop, Line, Circle } from "react-nativ
 import { Image } from "expo-image";
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 import { type ChartPoint } from "../lib/mock-data";
+import { PremiumSpinner } from "./ui/PremiumSpinner";
 
 export type ChartValueType = "probability" | "price";
 export type ChartCurveType = "smooth" | "linear" | "monotone" | "step";
@@ -27,6 +28,8 @@ export interface MarketChartNativeProps {
     assetLabel?: string;
     headlineValue?: number;
     hideHeader?: boolean;
+    isClusteredExpected?: boolean;
+    isLoading?: boolean;
 }
 
 const MAX_POINTS = 60;
@@ -430,6 +433,8 @@ export function MarketChartNative({
     assetLabel,
     headlineValue,
     hideHeader = false,
+    isClusteredExpected = false,
+    isLoading = false,
 }: MarketChartNativeProps) {
     const chartWidth = Dimensions.get("window").width - 16;
     const chartHeight = 200;
@@ -450,7 +455,8 @@ export function MarketChartNative({
         validSeries.length === 1 && validData.length === 0
             ? validSeries[0].data
             : validData;
-    const showEmptyState = !clusteredMode && singleSource.length === 0;
+    const isDataEmpty = !clusteredMode && singleSource.length === 0;
+    const isWaitingForData = isLoading || (isClusteredExpected && !clusteredMode);
 
     const sampledSingle = downsample(singleSource, MAX_POINTS);
     const sampledSeries = validSeries.map((item) => ({
@@ -522,7 +528,7 @@ export function MarketChartNative({
     const linePath = singlePath || singleFallback;
     const areaPath = buildAreaPath(singlePoints, linePath, padding.top + innerHeight);
     const lastPoint = singlePoints[singlePoints.length - 1];
-    const singleGeometry: SeriesGeometry | null = showEmptyState
+    const singleGeometry: SeriesGeometry | null = isDataEmpty
         ? null
         : {
             key: validSeries.length === 1 && validData.length === 0 ? validSeries[0].key : "primary",
@@ -550,10 +556,13 @@ export function MarketChartNative({
             }
             return `M ${points[0].x} ${points[0].y} L ${points[points.length - 1].x} ${points[points.length - 1].y}`;
         })();
+        const finalPath = pathD || fallback;
+        const areaPath = buildAreaPath(points, finalPath, padding.top + innerHeight);
         return {
             key: item.key,
             color: item.color,
-            path: pathD || fallback,
+            path: finalPath,
+            areaPath,
             last: points[points.length - 1],
         };
     });
@@ -585,10 +594,10 @@ export function MarketChartNative({
         scrubOpacity.value = 0;
         lastSelectionKeyRef.current = null;
         setScrubSelection(null);
-    }, [activeRange, clusteredMode, endTs, scrubDataSignature, scrubOpacity, showEmptyState, startTs]);
+    }, [activeRange, clusteredMode, endTs, scrubDataSignature, scrubOpacity, isDataEmpty, startTs]);
 
     const updateScrubSelection = (touchX: number, touchY: number) => {
-        if (showEmptyState) return;
+        if (isDataEmpty) return;
 
         const clampedX = clamp(touchX, padding.left, padding.left + innerWidth);
         const clampedY = clamp(touchY, padding.top, padding.top + innerHeight);
@@ -681,7 +690,7 @@ export function MarketChartNative({
     };
 
     const scrubGesture = Gesture.Pan()
-        .enabled(!showEmptyState)
+        .enabled(!isDataEmpty)
         .maxPointers(1)
         .minDistance(0)
         .shouldCancelWhenOutside(false)
@@ -716,7 +725,14 @@ export function MarketChartNative({
     }));
     const scrubTooltipHeight = getScrubTooltipHeight(scrubSelection);
 
-    if (showEmptyState) {
+    if (isDataEmpty) {
+        if (isWaitingForData) {
+            return (
+                <View style={[styles.container, styles.emptyContainer]}>
+                    <PremiumSpinner size={24} color={color} />
+                </View>
+            );
+        }
         return (
             <View style={[styles.container, styles.emptyContainer]}>
                 <Text style={styles.emptyText}>No chart data available</Text>
@@ -751,6 +767,12 @@ export function MarketChartNative({
                                 <Stop offset="0" stopColor={color} stopOpacity={0.15} />
                                 <Stop offset="1" stopColor={color} stopOpacity={0} />
                             </LinearGradient>
+                            {clusteredMode && clusteredGeometries.map((item) => (
+                                <LinearGradient key={`grad-${item.key}`} id={`grad-${item.key}`} x1="0" y1="0" x2="0" y2="1">
+                                    <Stop offset="0" stopColor={item.color} stopOpacity={0.10} />
+                                    <Stop offset="1" stopColor={item.color} stopOpacity={0} />
+                                </LinearGradient>
+                            ))}
                         </Defs>
 
                         {clusteredMode
@@ -798,26 +820,18 @@ export function MarketChartNative({
                         {clusteredMode
                             ? clusteredPaths.map((item) => (
                                 <React.Fragment key={item.key}>
+                                    {item.areaPath ? (
+                                        <Path d={item.areaPath} fill={`url(#grad-${item.key})`} />
+                                    ) : null}
                                     {item.path ? (
-                                        <>
-                                            <Path
-                                                d={item.path}
-                                                stroke={item.color}
-                                                strokeOpacity={0.14}
-                                                strokeWidth={6.5}
-                                                fill="none"
-                                                strokeLinecap="round"
-                                                strokeLinejoin="round"
-                                            />
-                                            <Path
-                                                d={item.path}
-                                                stroke={item.color}
-                                                strokeWidth={2.8}
-                                                fill="none"
-                                                strokeLinecap="round"
-                                                strokeLinejoin="round"
-                                            />
-                                        </>
+                                        <Path
+                                            d={item.path}
+                                            stroke={item.color}
+                                            strokeWidth={2.5}
+                                            fill="none"
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                        />
                                     ) : null}
                                     {item.last ? (
                                         <>
