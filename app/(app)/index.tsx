@@ -23,7 +23,7 @@ import { fetchMarketsForApp, fetchJupiterTagsByCategories } from "../../lib/jupi
 import { MarketCardNative } from "../../components/MarketCardNative";
 import { getSolBalance, getSolPriceUsd, getUsdcBalance } from "../../lib/solana";
 import { TradePanel } from "../../components/market/TradePanel";
-import { TradeSide } from "../../hooks/useTrade";
+import { TradeSide, useTrade } from "../../hooks/useTrade";
 import { usePositions } from "../../hooks/usePositions";
 import {
     Bell,
@@ -329,13 +329,29 @@ function sortMarketsWithinGroup(markets: Market[]): Market[] {
 
 function sortMarketGroupsForOdds(
     groups: MarketGroup[],
-    key: OddsSortKey,
+    key: OddsSortKey | "none",
     direction: OddsSortDirection,
-    fallbackOrder: Map<string, number>
+    fallbackOrder: Map<string, number>,
+    batchSize: number
 ): MarketGroup[] {
     const list = [...groups];
 
     return list.sort((a, b) => {
+        const aIndex = fallbackOrder.get(a.eventId) ?? 999999;
+        const bIndex = fallbackOrder.get(b.eventId) ?? 999999;
+
+        // Group into fetch batches to prevent cross-page UX jumping when sorting dynamically
+        const aBatch = Math.floor(aIndex / batchSize);
+        const bBatch = Math.floor(bIndex / batchSize);
+
+        if (aBatch !== bBatch) {
+            return aBatch - bBatch; // Older batches always render before newer batches
+        }
+
+        if (key === "none") {
+            return aIndex - bIndex;
+        }
+
         if (key === "ticker") {
             const titleDiff = a.title.toLowerCase().localeCompare(b.title.toLowerCase());
             if (titleDiff !== 0) return titleDiff;
@@ -345,14 +361,14 @@ function sortMarketGroupsForOdds(
         } else if (key === "volume") {
             const volumeDiff = b.volume - a.volume;
             if (volumeDiff !== 0) return volumeDiff;
-        } else {
+        } else if (key === "change") {
             const aOddsValue = direction === "up" ? getGroupHighestYesPrice(a) : getGroupLowestYesPrice(a);
             const bOddsValue = direction === "up" ? getGroupHighestYesPrice(b) : getGroupLowestYesPrice(b);
             const changeDiff = direction === "up" ? bOddsValue - aOddsValue : aOddsValue - bOddsValue;
             if (changeDiff !== 0) return changeDiff;
         }
 
-        return (fallbackOrder.get(a.eventId) ?? 0) - (fallbackOrder.get(b.eventId) ?? 0);
+        return aIndex - bIndex;
     });
 }
 
@@ -366,13 +382,13 @@ export default function HomeFeed() {
             ? solanaWallet.wallets[0].address
             : null;
 
+    const { usdcBalance, fetchBalance: fetchUsdcBalance } = useTrade();
     const [solBalance, setSolBalance] = useState<number | null>(null);
-    const [usdcBalance, setUsdcBalance] = useState<number | null>(null);
     const [solPriceUsd, setSolPriceUsd] = useState<number | null>(null);
     const [balanceLoading, setBalanceLoading] = useState(false);
     const [balanceError, setBalanceError] = useState<string | null>(null);
     const [selectedCategory, setSelectedCategory] = useState<string>("Popular");
-    const [oddsSortKey, setOddsSortKey] = useState<OddsSortKey>("change");
+    const [oddsSortKey, setOddsSortKey] = useState<OddsSortKey | "none">("none");
     const [oddsSortDirection, setOddsSortDirection] = useState<OddsSortDirection>("up");
     const [showOddsSortSheet, setShowOddsSortSheet] = useState(false);
     const [categories, setCategories] = useState<string[]>([]);
@@ -421,7 +437,7 @@ export default function HomeFeed() {
         Alert.alert("Success", `Trade successful! Outcome: ${details.outcome}`);
         setShowTradePanel(false);
         if (primaryAddress) {
-            getUsdcBalance(primaryAddress).then(setUsdcBalance);
+            void fetchUsdcBalance();
         }
     };
 
@@ -488,7 +504,7 @@ export default function HomeFeed() {
             await fundWallet(options);
 
             getSolBalance(primaryAddress).then(setSolBalance);
-            getUsdcBalance(primaryAddress).then(setUsdcBalance);
+            void fetchUsdcBalance();
         } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             if (!msg.includes("funding_flow_cancelled")) Alert.alert("Deposit", msg);
@@ -614,6 +630,9 @@ export default function HomeFeed() {
     }, []);
 
     const loadMoreMarkets = useCallback(async () => {
+        if (selectedCategory === "Popular" && visibleGroupLimit >= 100) {
+            return;
+        }
         if (isFetchingMore || !nextCursor || selectedCategory === "Favorites") return;
         setIsFetchingMore(true);
         try {
@@ -668,36 +687,39 @@ export default function HomeFeed() {
                     return next;
                 });
 
-                setVisibleGroupLimit((prev) => prev + (
-                    selectedCategory === "Popular" ? POPULAR_GROUP_BATCH_SIZE : CATEGORY_GROUP_BATCH_SIZE
-                ));
+                setVisibleGroupLimit((prev) => {
+                    const nextLimit = prev + (selectedCategory === "Popular" ? POPULAR_GROUP_BATCH_SIZE : CATEGORY_GROUP_BATCH_SIZE);
+                    if (selectedCategory === "Popular" && nextLimit > 100) {
+                        return 100;
+                    }
+                    return nextLimit;
+                });
             }
         } catch (e) {
             console.error("[HomeFeed] loadMoreMarkets error:", e);
         } finally {
             setIsFetchingMore(false);
         }
-    }, [isFetchingMore, nextCursor, selectedCategory]);
+    }, [isFetchingMore, nextCursor, selectedCategory, visibleGroupLimit]);
 
     const loadBalances = useCallback(async () => {
         if (!primaryAddress) return;
         setBalanceLoading(true);
         setBalanceError(null);
         try {
-            const [sol, usdc, price] = await Promise.all([
+            const [sol, price] = await Promise.all([
                 getSolBalance(primaryAddress),
-                getUsdcBalance(primaryAddress),
                 getSolPriceUsd(),
             ]);
             setSolBalance(sol);
-            setUsdcBalance(usdc);
             setSolPriceUsd(price);
+            await fetchUsdcBalance();
         } catch (e) {
             setBalanceError(e instanceof Error ? e.message : "Failed to load balance");
         } finally {
             setBalanceLoading(false);
         }
-    }, [primaryAddress]);
+    }, [primaryAddress, fetchUsdcBalance]);
 
     const onRefresh = useCallback(async () => {
         setRefreshing(true);
@@ -811,11 +833,12 @@ export default function HomeFeed() {
 
     useEffect(() => {
         if (selectedCategory === "Favorites") return;
-        if (filterItems.length === 0) return;
-        if (!filterItems.includes(selectedCategory)) {
+        setFavoritesLoading(false);
+        if (filterItems.length > 0 && selectedCategory !== filterItems[0]) {
             setSelectedCategory(filterItems[0]);
+            setOddsSortKey("none");
         }
-    }, [filterItems, selectedCategory]);
+    }, [filterItems, primaryAddress, selectedCategory]);
 
     useEffect(() => {
         setVisibleGroupLimit(
@@ -880,19 +903,34 @@ export default function HomeFeed() {
         );
     }, [markets, selectedCategory, listNowMs]);
 
-    const handleSelectOddsSort = useCallback((key: OddsSortKey) => {
-        if (key === "change" && oddsSortKey === "change") {
+    const handleSelectOddsSort = useCallback((key: OddsSortKey | "none") => {
+        const resetScroll = () => {
+            const nextOffset = currentScrollOffsetRef.current >= STICKY_HEADER_TRIGGER_OFFSET
+                ? STICKY_HEADER_TRIGGER_OFFSET
+                : 0;
+            scrollY.value = nextOffset;
+            requestAnimationFrame(() => {
+                listRef.current?.scrollToOffset({
+                    offset: nextOffset,
+                    animated: false,
+                });
+            });
+        };
+
+        if (key === oddsSortKey && oddsSortKey !== "none") {
             setOddsSortDirection((prev) => (prev === "up" ? "down" : "up"));
             setShowOddsSortSheet(false);
+            resetScroll();
             return;
         }
 
         setOddsSortKey(key);
-        if (key !== "change") {
+        if (key !== "none" && key !== "change") {
             setOddsSortDirection("up");
         }
         setShowOddsSortSheet(false);
-    }, [oddsSortKey]);
+        resetScroll();
+    }, [oddsSortKey, scrollY]);
 
     const groupedFilteredMarkets = useMemo(() => {
         const rawList = filteredMarkets;
@@ -955,7 +993,9 @@ export default function HomeFeed() {
             ? popularOrder 
             : (persistentOrder.size > 0 ? persistentOrder : defaultOrder);
 
-        return sortMarketGroupsForOdds(grouped, oddsSortKey, oddsSortDirection, fallbackOrder)
+        const batchSize = selectedCategory === "Popular" ? POPULAR_GROUP_BATCH_SIZE : CATEGORY_GROUP_BATCH_SIZE;
+
+        return sortMarketGroupsForOdds(grouped, oddsSortKey, oddsSortDirection, fallbackOrder, batchSize)
             .slice(0, visibleGroupLimit);
     }, [filteredMarkets, oddsSortDirection, oddsSortKey, popularEventOrder, selectedCategory, visibleGroupLimit, persistentEventOrders]);
 
@@ -1113,7 +1153,10 @@ export default function HomeFeed() {
             >
                 <Pressable
                     style={[styles.oddsPill, selectedCategory === "Favorites" && styles.fixedCategoryPillActive]}
-                    onPress={() => setSelectedCategory("Favorites")}
+                    onPress={() => {
+                        setSelectedCategory("Favorites");
+                        setOddsSortKey("none");
+                    }}
                     onLayout={(e) => {
                         catLayouts.current.set("Favorites", e.nativeEvent.layout.x);
                     }}
@@ -1137,7 +1180,10 @@ export default function HomeFeed() {
                         <Pressable
                             key={`${prefix}-${category}`}
                             style={[styles.categoryPill, isSelected && styles.categoryPillActive]}
-                            onPress={() => setSelectedCategory(category)}
+                            onPress={() => {
+                                setSelectedCategory(category);
+                                setOddsSortKey("none");
+                            }}
                             onLayout={(e) => {
                                 catLayouts.current.set(category, e.nativeEvent.layout.x);
                             }}
@@ -1279,7 +1325,8 @@ export default function HomeFeed() {
             favoriteMarketGroups,
             oddsSortKey,
             oddsSortDirection,
-            new Map(favoriteMarketItems.map((item, index) => [item.routeId, index] as const))
+            new Map(favoriteMarketItems.map((item, index) => [item.routeId, index] as const)),
+            CATEGORY_GROUP_BATCH_SIZE
         ).slice(0, visibleGroupLimit)
         : groupedFilteredMarkets;
 

@@ -279,11 +279,67 @@ BEGIN
 END;
 $$;
 
+-- Downvotes Table
+CREATE TABLE IF NOT EXISTS public.downvotes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id TEXT NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  post_id UUID NOT NULL REFERENCES public.posts(id) ON DELETE CASCADE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  UNIQUE(user_id, post_id)
+);
+
+CREATE INDEX IF NOT EXISTS downvotes_post_id_idx ON public.downvotes (post_id);
+CREATE INDEX IF NOT EXISTS downvotes_user_id_idx ON public.downvotes (user_id);
+
+-- Add downvotes_count to posts if not exists
+ALTER TABLE public.posts ADD COLUMN IF NOT EXISTS downvotes_count INTEGER DEFAULT 0;
+
+-- Toggle Downvote
+CREATE OR REPLACE FUNCTION toggle_downvote(target_post_id UUID, target_user_id TEXT)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  exists_check BOOLEAN;
+BEGIN
+  -- Check if downvote exists
+  SELECT EXISTS (
+    SELECT 1 FROM public.downvotes 
+    WHERE post_id = target_post_id AND user_id = target_user_id
+  ) INTO exists_check;
+
+  IF exists_check THEN
+    -- Remove downvote
+    DELETE FROM public.downvotes 
+    WHERE post_id = target_post_id AND user_id = target_user_id;
+    
+    UPDATE public.posts 
+    SET downvotes_count = GREATEST(0, COALESCE(downvotes_count, 0) - 1)
+    WHERE id = target_post_id;
+    
+    RETURN FALSE;
+  ELSE
+    -- Add downvote
+    INSERT INTO public.downvotes (post_id, user_id)
+    VALUES (target_post_id, target_user_id);
+    
+    UPDATE public.posts 
+    SET downvotes_count = COALESCE(downvotes_count, 0) + 1
+    WHERE id = target_post_id;
+    
+    RETURN TRUE;
+  END IF;
+END;
+$$;
+
 -- RLS for New Tables
 ALTER TABLE public.posts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.likes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.reposts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.comments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.downvotes ENABLE ROW LEVEL SECURITY;
 
 -- Post Policies
 CREATE POLICY "Posts are viewable by everyone" ON public.posts FOR SELECT USING (true);
@@ -298,6 +354,10 @@ CREATE POLICY "Users can unlike" ON public.likes FOR DELETE USING (true);
 CREATE POLICY "Reposts viewable by everyone" ON public.reposts FOR SELECT USING (true);
 CREATE POLICY "Users can repost" ON public.reposts FOR INSERT WITH CHECK (true);
 CREATE POLICY "Users can unrepost" ON public.reposts FOR DELETE USING (true);
+
+CREATE POLICY "Downvotes viewable by everyone" ON public.downvotes FOR SELECT USING (true);
+CREATE POLICY "Users can downvote" ON public.downvotes FOR INSERT WITH CHECK (true);
+CREATE POLICY "Users can undownvote" ON public.downvotes FOR DELETE USING (true);
 
 CREATE POLICY "Comments viewable by everyone" ON public.comments FOR SELECT USING (true);
 CREATE POLICY "Users can comment" ON public.comments FOR INSERT WITH CHECK (true);

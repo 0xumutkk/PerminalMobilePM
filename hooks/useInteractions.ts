@@ -114,8 +114,30 @@ export function useInteractions() {
         }
     }, [getCurrentUserId]);
 
+    const toggleDownvote = useCallback(async (postId: string) => {
+        const userId = getCurrentUserId();
+        if (!userId) return false;
+
+        setIsSubmitting(true);
+        try {
+            const { data, error } = await supabase.rpc("toggle_downvote", {
+                target_post_id: postId,
+                target_user_id: userId
+            } as any);
+
+            if (error) throw error;
+            return data as boolean;
+        } catch (err) {
+            console.error("Error toggling downvote:", err);
+            return null;
+        } finally {
+            setIsSubmitting(false);
+        }
+    }, [getCurrentUserId]);
+
     return {
         toggleLike,
+        toggleDownvote,
         toggleRepost,
         createPost,
         deletePost,

@@ -1,11 +1,14 @@
 import React, { useEffect, useRef, useState } from "react";
 import { View, StyleSheet, Dimensions, Text, Pressable } from "react-native";
 import { GestureDetector, Gesture } from "react-native-gesture-handler";
-import Svg, { Path, Defs, LinearGradient, Stop, Line, Circle } from "react-native-svg";
+import Svg, { Path, Defs, LinearGradient, Stop, Line, Circle, ClipPath, Rect } from "react-native-svg";
 import { Image } from "expo-image";
-import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
+import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withTiming, useAnimatedProps } from "react-native-reanimated";
 import { type ChartPoint } from "../lib/mock-data";
 import { PremiumSpinner } from "./ui/PremiumSpinner";
+
+const AnimatedRect = Animated.createAnimatedComponent(Rect);
+const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
 export type ChartValueType = "probability" | "price";
 export type ChartCurveType = "smooth" | "linear" | "monotone" | "step";
@@ -424,7 +427,7 @@ function toScreenPoints(
 
 export function MarketChartNative({
     data,
-    color = "#34c759",
+    color: propColor = "#34c759",
     series = [],
     activeRange = "ALL",
     onRangeChange,
@@ -528,6 +531,15 @@ export function MarketChartNative({
     const linePath = singlePath || singleFallback;
     const areaPath = buildAreaPath(singlePoints, linePath, padding.top + innerHeight);
     const lastPoint = singlePoints[singlePoints.length - 1];
+    const endVal = (clusteredMode ? clusterAllPoints : sampledSingle)[(clusteredMode ? clusterAllPoints : sampledSingle).length - 1]?.value ?? 0;
+    const displayValue = typeof headlineValue === "number" && Number.isFinite(headlineValue)
+        ? headlineValue
+        : endVal;
+
+    const color = !clusteredMode && valueType === "probability" 
+        ? (displayValue >= 0.5 ? "#34c759" : "#ff3b30") 
+        : propColor;
+
     const singleGeometry: SeriesGeometry | null = isDataEmpty
         ? null
         : {
@@ -567,10 +579,6 @@ export function MarketChartNative({
         };
     });
 
-    const endVal = (clusteredMode ? clusterAllPoints : sampledSingle)[(clusteredMode ? clusterAllPoints : sampledSingle).length - 1]?.value ?? 0;
-    const displayValue = typeof headlineValue === "number" && Number.isFinite(headlineValue)
-        ? headlineValue
-        : endVal;
     const currentPrimaryText = valueType === "price" ? formatUsd(displayValue) : `${Math.round(displayValue * 100)}%`;
     const currentSecondaryText = valueType === "price" ? (assetLabel ?? "USD") : "chance";
     const scrubDataSignature = clusteredMode
@@ -692,11 +700,8 @@ export function MarketChartNative({
     const scrubGesture = Gesture.Pan()
         .enabled(!isDataEmpty)
         .maxPointers(1)
-        .minDistance(0)
+        .activeOffsetX([-10, 10])
         .shouldCancelWhenOutside(false)
-        .onBegin((event) => {
-            runOnJS(updateScrubSelection)(event.x, event.y);
-        })
         .onStart((event) => {
             runOnJS(updateScrubSelection)(event.x, event.y);
         })
@@ -725,6 +730,31 @@ export function MarketChartNative({
     }));
     const scrubTooltipHeight = getScrubTooltipHeight(scrubSelection);
 
+    const animatedClipProps = useAnimatedProps(() => {
+        return {
+            width: scrubOpacity.value > 0 ? Math.max(0, scrubX.value) : chartWidth,
+        };
+    });
+
+    const animatedClipInvertProps = useAnimatedProps(() => {
+        return {
+            x: scrubOpacity.value > 0 ? scrubX.value : chartWidth,
+            width: chartWidth,
+        };
+    });
+
+    const animatedBgCircleProps = useAnimatedProps(() => {
+        return {
+            opacity: (1 - scrubOpacity.value) * 0.92,
+        };
+    });
+
+    const animatedFgCircleProps = useAnimatedProps(() => {
+        return {
+            opacity: 1 - scrubOpacity.value,
+        };
+    });
+
     if (isDataEmpty) {
         if (isWaitingForData) {
             return (
@@ -739,6 +769,8 @@ export function MarketChartNative({
             </View>
         );
     }
+
+
 
     return (
         <View style={styles.container}>
@@ -763,6 +795,12 @@ export function MarketChartNative({
                 <View style={[styles.chartArea, clusteredMode && styles.clusterChartArea]}>
                     <Svg width={chartWidth} height={chartHeight}>
                         <Defs>
+                            <ClipPath id="scrub-clip">
+                                <AnimatedRect x={0} y={0} height={chartHeight} animatedProps={animatedClipProps} />
+                            </ClipPath>
+                            <ClipPath id="scrub-clip-invert">
+                                <AnimatedRect y={0} height={chartHeight} animatedProps={animatedClipInvertProps} />
+                            </ClipPath>
                             <LinearGradient id="chartGradient" x1="0" y1="0" x2="0" y2="1">
                                 <Stop offset="0" stopColor={color} stopOpacity={0.15} />
                                 <Stop offset="1" stopColor={color} stopOpacity={0} />
@@ -814,29 +852,48 @@ export function MarketChartNative({
                         })}
 
                         {!clusteredMode && areaPath ? (
-                            <Path d={areaPath} fill="url(#chartGradient)" />
+                            <>
+                                <Path d={areaPath} fill="url(#chartGradient)" opacity={0.4} clipPath="url(#scrub-clip-invert)" />
+                                <Path d={areaPath} fill="url(#chartGradient)" clipPath="url(#scrub-clip)" />
+                            </>
                         ) : null}
 
                         {clusteredMode
                             ? clusteredPaths.map((item) => (
                                 <React.Fragment key={item.key}>
                                     {item.areaPath ? (
-                                        <Path d={item.areaPath} fill={`url(#grad-${item.key})`} />
+                                        <>
+                                            <Path d={item.areaPath} fill={`url(#grad-${item.key})`} opacity={0.4} clipPath="url(#scrub-clip-invert)" />
+                                            <Path d={item.areaPath} fill={`url(#grad-${item.key})`} clipPath="url(#scrub-clip)" />
+                                        </>
                                     ) : null}
                                     {item.path ? (
-                                        <Path
-                                            d={item.path}
-                                            stroke={item.color}
-                                            strokeWidth={2.5}
-                                            fill="none"
-                                            strokeLinecap="round"
-                                            strokeLinejoin="round"
-                                        />
+                                        <>
+                                            <Path
+                                                d={item.path}
+                                                stroke={item.color}
+                                                strokeWidth={2.5}
+                                                fill="none"
+                                                strokeOpacity={0.3}
+                                                clipPath="url(#scrub-clip-invert)"
+                                                strokeLinecap="round"
+                                                strokeLinejoin="round"
+                                            />
+                                            <Path
+                                                d={item.path}
+                                                stroke={item.color}
+                                                strokeWidth={2.5}
+                                                fill="none"
+                                                clipPath="url(#scrub-clip)"
+                                                strokeLinecap="round"
+                                                strokeLinejoin="round"
+                                            />
+                                        </>
                                     ) : null}
                                     {item.last ? (
                                         <>
-                                            <Circle cx={item.last.x} cy={item.last.y} r={4.2} fill="#FFFFFF" opacity={0.92} />
-                                            <Circle cx={item.last.x} cy={item.last.y} r={3.2} fill={item.color} />
+                                            <AnimatedCircle cx={item.last.x} cy={item.last.y} r={4.2} fill="#FFFFFF" animatedProps={animatedBgCircleProps} />
+                                            <AnimatedCircle cx={item.last.x} cy={item.last.y} r={3.2} fill={item.color} animatedProps={animatedFgCircleProps} />
                                         </>
                                     ) : null}
                                 </React.Fragment>
@@ -844,16 +901,29 @@ export function MarketChartNative({
                             : (
                                 <>
                                     {linePath ? (
-                                        <Path
-                                            d={linePath}
-                                            stroke={color}
-                                            strokeWidth={2.5}
-                                            fill="none"
-                                            strokeLinecap="round"
-                                            strokeLinejoin="round"
-                                        />
+                                        <>
+                                            <Path
+                                                d={linePath}
+                                                stroke={color}
+                                                strokeWidth={2.5}
+                                                fill="none"
+                                                strokeOpacity={0.3}
+                                                clipPath="url(#scrub-clip-invert)"
+                                                strokeLinecap="round"
+                                                strokeLinejoin="round"
+                                            />
+                                            <Path
+                                                d={linePath}
+                                                stroke={color}
+                                                strokeWidth={2.5}
+                                                fill="none"
+                                                clipPath="url(#scrub-clip)"
+                                                strokeLinecap="round"
+                                                strokeLinejoin="round"
+                                            />
+                                        </>
                                     ) : null}
-                                    {lastPoint ? <Circle cx={lastPoint.x} cy={lastPoint.y} r={4} fill={color} /> : null}
+                                    {lastPoint ? <AnimatedCircle cx={lastPoint.x} cy={lastPoint.y} r={4} fill={color} animatedProps={animatedFgCircleProps} /> : null}
                                 </>
                             )}
                     </Svg>

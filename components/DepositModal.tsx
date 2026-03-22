@@ -1,7 +1,16 @@
 import React, { useEffect, useRef } from "react";
-import { View, Text, StyleSheet, TouchableOpacity, Modal, Platform, Animated, Dimensions, PanResponder } from "react-native";
-import { GlassView, isLiquidGlassAvailable } from "expo-glass-effect";
+import { View, Text, StyleSheet, TouchableOpacity, Modal, Platform, Dimensions, Pressable } from "react-native";
 import { X, CreditCard, ChevronRight, Scan, Smartphone, Globe } from "lucide-react-native";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import Animated, {
+    runOnJS,
+    useAnimatedStyle,
+    useSharedValue,
+    withSpring,
+    withTiming,
+    FadeIn,
+    FadeOut
+} from "react-native-reanimated";
 
 interface DepositModalProps {
     visible: boolean;
@@ -11,182 +20,142 @@ interface DepositModalProps {
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
 const DISMISS_DRAG_DISTANCE = 120;
-const DISMISS_DRAG_VELOCITY = 0.9;
+const DISMISS_DRAG_VELOCITY = 900;
+const SHEET_EXIT_TRANSLATE_Y = 500;
 
 export function DepositModal({ visible, onClose, onSelectMethod }: DepositModalProps) {
-    const fadeAnim = useRef(new Animated.Value(0)).current;
-    const slideAnim = useRef(new Animated.Value(SCREEN_HEIGHT)).current;
+    const translateY = useSharedValue(SCREEN_HEIGHT);
+    const bgOpacity = useSharedValue(0);
 
     useEffect(() => {
         if (visible) {
-            Animated.parallel([
-                Animated.timing(fadeAnim, {
-                    toValue: 1,
-                    duration: 300,
-                    useNativeDriver: true,
-                }),
-                Animated.spring(slideAnim, {
-                    toValue: 0,
-                    tension: 50,
-                    friction: 8,
-                    useNativeDriver: true,
-                }),
-            ]).start();
-        } else {
-            fadeAnim.setValue(0);
-            slideAnim.setValue(SCREEN_HEIGHT);
+            bgOpacity.value = withTiming(1, { duration: 250 });
+            translateY.value = withTiming(0, {
+                duration: 250,
+            });
         }
-    }, [visible]);
+    }, [visible, bgOpacity, translateY]);
 
-    const handleClose = () => {
-        Animated.parallel([
-            Animated.timing(fadeAnim, {
-                toValue: 0,
-                duration: 250,
-                useNativeDriver: true,
-            }),
-            Animated.timing(slideAnim, {
-                toValue: SCREEN_HEIGHT,
-                duration: 250,
-                useNativeDriver: true,
-            }),
-        ]).start(() => {
-            onClose();
+    const dismissSheet = () => {
+        bgOpacity.value = withTiming(0, { duration: 200 });
+        translateY.value = withTiming(SHEET_EXIT_TRANSLATE_Y, { duration: 200 }, () => {
+            runOnJS(onClose)();
         });
     };
 
-    const panResponder = useRef(
-        PanResponder.create({
-            onMoveShouldSetPanResponder: (_, gestureState) => (
-                gestureState.dy > 8 && Math.abs(gestureState.dy) > Math.abs(gestureState.dx)
-            ),
-            onPanResponderMove: (_, gestureState) => {
-                if (gestureState.dy <= 0) return;
-                slideAnim.setValue(gestureState.dy);
-            },
-            onPanResponderRelease: (_, gestureState) => {
-                if (gestureState.dy > DISMISS_DRAG_DISTANCE || gestureState.vy > DISMISS_DRAG_VELOCITY) {
-                    handleClose();
-                    return;
-                }
-
-                Animated.spring(slideAnim, {
-                    toValue: 0,
-                    tension: 50,
-                    friction: 8,
-                    useNativeDriver: true,
-                }).start();
-            },
-            onPanResponderTerminate: () => {
-                Animated.spring(slideAnim, {
-                    toValue: 0,
-                    tension: 50,
-                    friction: 8,
-                    useNativeDriver: true,
-                }).start();
-            },
+    const panGesture = Gesture.Pan()
+        .onUpdate((event) => {
+            translateY.value = Math.max(0, event.translationY);
         })
-    ).current;
+        .onEnd((event) => {
+            if (event.translationY > DISMISS_DRAG_DISTANCE || event.velocityY > DISMISS_DRAG_VELOCITY) {
+                runOnJS(dismissSheet)();
+                return;
+            }
+            translateY.value = withTiming(0, {
+                duration: 200,
+            });
+        });
+
+    const animatedSheetStyle = useAnimatedStyle(() => ({
+        transform: [{ translateY: translateY.value }],
+    }));
+
+    const animatedBgStyle = useAnimatedStyle(() => ({
+        opacity: bgOpacity.value,
+    }));
 
     return (
         <Modal
             visible={visible}
             animationType="none"
-            transparent={true}
-            onRequestClose={handleClose}
+            transparent
+            onRequestClose={dismissSheet}
+            onDismiss={() => {
+                translateY.value = SCREEN_HEIGHT;
+                bgOpacity.value = 0;
+            }}
         >
             <View style={styles.container}>
-                <Animated.View
-                    style={[
-                        styles.overlay,
-                        { opacity: fadeAnim }
-                    ]}
-                >
-                    <TouchableOpacity
-                        style={StyleSheet.absoluteFill}
-                        activeOpacity={1}
-                        onPress={handleClose}
-                    />
+                <Animated.View style={[styles.overlay, animatedBgStyle]}>
+                    <Pressable style={StyleSheet.absoluteFill} onPress={dismissSheet} />
                 </Animated.View>
 
-                <Animated.View
-                    style={[
-                        styles.content,
-                        { transform: [{ translateY: slideAnim }] }
-                    ]}
-                >
-                    <View style={styles.dragHandleArea} {...panResponder.panHandlers}>
-                        <View style={styles.handle} />
-                    </View>
+                <GestureDetector gesture={panGesture}>
+                    <Animated.View style={[styles.content, animatedSheetStyle]}>
+                        <View style={styles.dragHandleArea}>
+                            <View style={styles.handle} />
+                        </View>
 
-                    <View style={styles.header}>
-                        <Text style={styles.title}>Deposit</Text>
-                    </View>
+                        <View style={styles.header}>
+                            <Text style={styles.title}>Deposit</Text>
+                        </View>
 
-                    <View style={styles.methodList}>
-                        <TouchableOpacity
-                            style={styles.methodButton}
-                            onPress={() => onSelectMethod("crypto")}
-                        >
+                        <View style={styles.methodList}>
+                            <TouchableOpacity
+                                style={styles.methodButton}
+                                onPress={() => onSelectMethod("crypto")}
+                            >
                                 <View style={styles.methodInfo}>
                                     <Text style={styles.methodTitle}>Crypto</Text>
                                     <Text style={styles.methodDesc}>Receive USDC on Solana (not SOL)</Text>
                                 </View>
-                            <View style={[styles.iconContainer]}>
-                                <Scan color="#000" size={28} strokeWidth={2} />
-                            </View>
-                        </TouchableOpacity>
-
-                        {Platform.OS === "ios" && (
-                            <TouchableOpacity
-                                style={styles.methodButton}
-                                onPress={() => onSelectMethod("apple_pay")}
-                            >
-                                <View style={styles.methodInfo}>
-                                    <Text style={styles.methodTitle}>Apple Pay</Text>
-                                    <Text style={styles.methodDesc}>Buy any prediction or deposit USDC with Apple Pay</Text>
-                                </View>
-                                <View style={[styles.iconContainer]}>
-                                    <Smartphone color="#000" size={28} strokeWidth={2} />
+                                <View style={styles.iconContainer}>
+                                    <Scan color="#000" size={28} strokeWidth={2} />
                                 </View>
                             </TouchableOpacity>
-                        )}
 
-                        {Platform.OS === "android" && (
+                            {Platform.OS === "ios" && (
+                                <TouchableOpacity
+                                    style={styles.methodButton}
+                                    onPress={() => onSelectMethod("apple_pay")}
+                                >
+                                    <View style={styles.methodInfo}>
+                                        <Text style={styles.methodTitle}>Apple Pay</Text>
+                                        <Text style={styles.methodDesc}>Buy any prediction or deposit USDC with Apple Pay</Text>
+                                    </View>
+                                    <View style={styles.iconContainer}>
+                                        <Smartphone color="#000" size={28} strokeWidth={2} />
+                                    </View>
+                                </TouchableOpacity>
+                            )}
+
+                            {Platform.OS === "android" && (
+                                <TouchableOpacity
+                                    style={styles.methodButton}
+                                    onPress={() => onSelectMethod("google_pay")}
+                                >
+                                    <View style={styles.methodInfo}>
+                                        <Text style={styles.methodTitle}>Google Pay</Text>
+                                        <Text style={styles.methodDesc}>Pay with your Google account</Text>
+                                    </View>
+                                    <View style={styles.iconContainer}>
+                                        <Globe color="#000" size={28} strokeWidth={2} />
+                                    </View>
+                                </TouchableOpacity>
+                            )}
+
                             <TouchableOpacity
                                 style={styles.methodButton}
-                                onPress={() => onSelectMethod("google_pay")}
+                                onPress={() => onSelectMethod("card")}
                             >
                                 <View style={styles.methodInfo}>
-                                    <Text style={styles.methodTitle}>Google Pay</Text>
-                                    <Text style={styles.methodDesc}>Pay with your Google account</Text>
+                                    <Text style={styles.methodTitle}>Debit Card</Text>
+                                    <Text style={styles.methodDesc}>Deposit USDC with your card</Text>
                                 </View>
-                                <View style={[styles.iconContainer]}>
-                                    <Globe color="#000" size={28} strokeWidth={2} />
+                                <View style={styles.iconContainer}>
+                                    <CreditCard color="#000" size={28} strokeWidth={2} />
                                 </View>
                             </TouchableOpacity>
-                        )}
+                        </View>
 
-                        <TouchableOpacity
-                            style={styles.methodButton}
-                            onPress={() => onSelectMethod("card")}
-                        >
-                            <View style={styles.methodInfo}>
-                                <Text style={styles.methodTitle}>Debit Card</Text>
-                                <Text style={styles.methodDesc}>Deposit USDC with your card</Text>
-                            </View>
-                            <View style={[styles.iconContainer]}>
-                                <CreditCard color="#000" size={28} strokeWidth={2} />
-                            </View>
-                        </TouchableOpacity>
-                    </View>
-
-                    <View style={styles.footer}>
-                        <Text style={styles.footerText}>
-                            Powered by Privy & MoonPay
-                        </Text>
-                    </View>
-                </Animated.View>
+                        <View style={styles.footer}>
+                            <Text style={styles.footerText}>
+                                Powered by Privy & MoonPay
+                            </Text>
+                        </View>
+                    </Animated.View>
+                </GestureDetector>
             </View>
         </Modal>
     );

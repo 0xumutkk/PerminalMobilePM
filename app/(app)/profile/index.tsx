@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { View, Text, StyleSheet, Pressable } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Image } from "expo-image";
-import { useRouter } from "expo-router";
+import { useRouter, useNavigation } from "expo-router";
 import { usePrivy } from "@privy-io/expo";
 import { useAuth } from "../../../hooks/useAuth";
 import { useTrade } from "../../../hooks/useTrade";
@@ -19,6 +19,7 @@ import { BottomProgressiveBlur } from "../../../components/ui/BottomProgressiveB
 
 export default function ProfileScreen() {
     const router = useRouter();
+    const navigation = useNavigation();
     const { logout } = usePrivy();
     const { activeWallet } = useAuth();
     const { profile, isLoading: profileLoading } = useProfile();
@@ -48,13 +49,26 @@ export default function ProfileScreen() {
         router.replace("/login");
     };
 
-    const handleProfileRefresh = async () => {
+    const handleProfileRefresh = React.useCallback(async () => {
         await Promise.all([
             fetchBalance(),
             refreshFollowCounts(),
             refreshPerformance(),
         ]);
-    };
+    }, [fetchBalance, refreshFollowCounts, refreshPerformance]);
+
+    React.useEffect(() => {
+        const unsubscribeList = [
+            navigation.addListener("focus", () => {
+                handleProfileRefresh();
+            })
+        ];
+        return () => {
+            for (const unsubscribe of unsubscribeList) {
+                unsubscribe();
+            }
+        };
+    }, [navigation, handleProfileRefresh]);
 
     const displayedFollowers = followersCount ?? profile?.followers_count;
     const displayedFollowing = followingCount ?? profile?.following_count;

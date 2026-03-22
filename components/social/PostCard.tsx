@@ -6,7 +6,7 @@ import { FeedPost } from "../../hooks/useFeed";
 import type { Market } from "../../lib/mock-data";
 import { getMarketResolution, getTradeMetadataSide } from "../../lib/marketResolution";
 import { formatTimeAgo } from "../../lib/utils";
-import { ArrowUp, Ellipsis, Repeat2, Share2, ShieldCheck, Trash2 } from "lucide-react-native";
+import { ArrowUp, ArrowDown, Ellipsis, Repeat2, Share2, ShieldCheck, Trash2 } from "lucide-react-native";
 import { useInteractions } from "../../hooks/useInteractions";
 import { CircularGauge } from "./CircularGauge";
 import { hasResolvablePostMarket, resolvePostMarket, resolvePostMarketId } from "../../lib/postMarkets";
@@ -23,10 +23,12 @@ export const PostCard = memo(function PostCard({ post, onTradePress, onPostDelet
     const router = useRouter();
     const { user, activeWallet } = useAuth();
     const currentUserId = deriveCurrentUserId(user, activeWallet);
-    const { toggleLike, toggleRepost, deletePost, isSubmitting } = useInteractions();
+    const { toggleLike, toggleDownvote, toggleRepost, deletePost, isSubmitting } = useInteractions();
 
     const [liked, setLiked] = useState(post.user_has_liked);
     const [likesCount, setLikesCount] = useState(post.likes_count || 0);
+    const [downvoted, setDownvoted] = useState(post.user_has_downvoted || false);
+    const [downvotesCount, setDownvotesCount] = useState(post.downvotes_count || 0);
     const [reposted, setReposted] = useState(post.user_has_reposted || false);
     const [repostsCount, setRepostsCount] = useState(post.reposts_count || 0);
     const [tradeLoading, setTradeLoading] = useState(false);
@@ -51,12 +53,24 @@ export const PostCard = memo(function PostCard({ post, onTradePress, onPostDelet
 
     const handleLike = async () => {
         const newLiked = !liked;
+        // Optimistic update: if downvoted previously, remove downvote visually (optional, keeping independent for now)
         setLiked(newLiked);
         setLikesCount(prev => newLiked ? prev + 1 : Math.max(0, prev - 1));
         const success = await toggleLike(post.id);
         if (success === null) {
             setLiked(!newLiked);
             setLikesCount(prev => !newLiked ? prev + 1 : Math.max(0, prev - 1));
+        }
+    };
+
+    const handleDownvote = async () => {
+        const newDownvoted = !downvoted;
+        setDownvoted(newDownvoted);
+        setDownvotesCount(prev => newDownvoted ? prev + 1 : Math.max(0, prev - 1));
+        const success = await toggleDownvote(post.id);
+        if (success === null) {
+            setDownvoted(!newDownvoted);
+            setDownvotesCount(prev => !newDownvoted ? prev + 1 : Math.max(0, prev - 1));
         }
     };
 
@@ -373,6 +387,11 @@ export const PostCard = memo(function PostCard({ post, onTradePress, onPostDelet
                     <TouchableOpacity style={styles.actionItem} onPress={handleLike}>
                         <ArrowUp size={16} color={liked ? "#34c759" : "#171717"} strokeWidth={liked ? 2.5 : 2} />
                         <Text style={[styles.actionItemText, liked && { color: "#34c759" }]}>{formatCount(likesCount)}</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity style={styles.actionItem} onPress={handleDownvote}>
+                        <ArrowDown size={16} color={downvoted ? "#ef4444" : "#171717"} strokeWidth={downvoted ? 2.5 : 2} />
+                        <Text style={[styles.actionItemText, downvoted && { color: "#ef4444" }]}>{formatCount(downvotesCount)}</Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity style={styles.actionItem} onPress={handleRepost}>

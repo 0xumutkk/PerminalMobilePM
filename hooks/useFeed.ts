@@ -7,7 +7,9 @@ export type FeedMode = "for_you" | "following";
 export interface FeedPost extends Post {
     author: Profile;
     user_has_liked: boolean;
+    user_has_downvoted: boolean;
     user_has_reposted: boolean;
+    downvotes_count?: number;
 }
 
 interface UseFeedParams {
@@ -26,6 +28,7 @@ type SupabaseErrorLike = {
 
 type RawFeedPost = Post & {
     author: Profile | Profile[] | null;
+    downvotes_count?: number;
 };
 
 function mergeUniquePosts(current: FeedPost[], incoming: FeedPost[]) {
@@ -46,6 +49,7 @@ function mergeUniquePosts(current: FeedPost[], incoming: FeedPost[]) {
 function normalizeRawPost(
     post: RawFeedPost,
     likedIds: Set<string>,
+    downvotedIds: Set<string>,
     repostedIds: Set<string>
 ): FeedPost {
     const author = Array.isArray(post.author) ? post.author[0] : post.author;
@@ -57,7 +61,9 @@ function normalizeRawPost(
         trade_metadata: post.trade_metadata || {},
         is_verified: post.is_verified || false,
         user_has_liked: likedIds.has(post.id),
+        user_has_downvoted: downvotedIds.has(post.id),
         user_has_reposted: repostedIds.has(post.id),
+        downvotes_count: post.downvotes_count || 0,
     };
 }
 
@@ -90,20 +96,24 @@ export function useFeed({
         if (!viewerId || postIds.length === 0) {
             return {
                 likedIds: new Set<string>(),
+                downvotedIds: new Set<string>(),
                 repostedIds: new Set<string>(),
             };
         }
 
-        const [likesResult, repostsResult] = await Promise.all([
+        const [likesResult, downvotesResult, repostsResult] = await Promise.all([
             supabase.from("likes").select("post_id").eq("user_id", viewerId).in("post_id", postIds),
+            supabase.from("downvotes").select("post_id").eq("user_id", viewerId).in("post_id", postIds),
             supabase.from("reposts").select("post_id").eq("user_id", viewerId).in("post_id", postIds),
         ]);
 
         if (likesResult.error) throw likesResult.error;
+        if (downvotesResult.error) throw downvotesResult.error;
         if (repostsResult.error) throw repostsResult.error;
 
         return {
             likedIds: new Set((likesResult.data ?? []).map((row: any) => String(row.post_id))),
+            downvotedIds: new Set((downvotesResult.data ?? []).map((row: any) => String(row.post_id))),
             repostedIds: new Set((repostsResult.data ?? []).map((row: any) => String(row.post_id))),
         };
     }, [viewerId]);
@@ -142,11 +152,11 @@ export function useFeed({
 
         if (postsError) throw postsError;
 
-        const { likedIds, repostedIds } = await fetchInteractionFlags(postIds);
+        const { likedIds, downvotedIds, repostedIds } = await fetchInteractionFlags(postIds);
         const order = new Map(postIds.map((id, index) => [id, index]));
 
         return ((data as RawFeedPost[] | null) ?? [])
-            .map((post) => normalizeRawPost(post, likedIds, repostedIds))
+            .map((post) => normalizeRawPost(post, likedIds, downvotedIds, repostedIds))
             .sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
     }, [fetchInteractionFlags]);
 
@@ -181,9 +191,9 @@ export function useFeed({
 
         const rawPosts = (data as RawFeedPost[] | null) ?? [];
         const postIds = rawPosts.map((post) => post.id);
-        const { likedIds, repostedIds } = await fetchInteractionFlags(postIds);
+        const { likedIds, downvotedIds, repostedIds } = await fetchInteractionFlags(postIds);
 
-        return rawPosts.map((post) => normalizeRawPost(post, likedIds, repostedIds));
+        return rawPosts.map((post) => normalizeRawPost(post, likedIds, downvotedIds, repostedIds));
     }, [fetchFollowingIds, fetchInteractionFlags, marketId, mode, pageSize, userId]);
 
     const fetchRankedPage = useCallback(async (pageToLoad: number) => {
