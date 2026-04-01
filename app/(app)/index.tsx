@@ -834,11 +834,13 @@ export default function HomeFeed() {
     useEffect(() => {
         if (selectedCategory === "Favorites") return;
         setFavoritesLoading(false);
-        if (filterItems.length > 0 && selectedCategory !== filterItems[0]) {
+        // Only reset to the first item if current selectedCategory is no longer available in filterItems
+        // This prevents immediate jumping back when user manually selects a non-first category
+        if (filterItems.length > 0 && !filterItems.includes(selectedCategory)) {
             setSelectedCategory(filterItems[0]);
             setOddsSortKey("none");
         }
-    }, [filterItems, primaryAddress, selectedCategory]);
+    }, [filterItems, selectedCategory]);
 
     useEffect(() => {
         setVisibleGroupLimit(
